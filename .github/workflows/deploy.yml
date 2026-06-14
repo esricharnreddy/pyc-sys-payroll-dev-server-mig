@@ -1,0 +1,103 @@
+name: Build, Migrate, and Deploy Payroll App
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  AZURE_WEBAPP_NAME: 'your-webapp-name'
+  
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Publish
+      run: dotnet publish --configuration Release --output ./publish --no-build
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: payroll-app
+        path: ./publish
+
+  database-migration:
+    runs-on: windows-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Install EF Core Tools
+      run: dotnet tool install --global dotnet-ef --version 8.0.0
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Generate Migration Script
+      run: |
+        dotnet ef migrations script --idempotent --output ./migration.sql
+      
+    - name: Apply Database Migrations
+      run: |
+        dotnet ef database update --connection "${{ secrets.AZURE_SQL_CONNECTION_STRING }}"
+      env:
+        ConnectionStrings__DefaultConnection: ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+
+    - name: Upload migration script
+      uses: actions/upload-artifact@v4
+      with:
+        name: migration-script
+        path: ./migration.sql
+
+  deploy:
+    runs-on: windows-latest
+    needs: database-migration
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: 'Production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+    
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: payroll-app
+        path: ./publish
+
+    - name: Deploy to Azure Web App
+      id: deploy-to-webapp
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: ./publish
+
+# Required GitHub Secrets:
+# - AZURE_SQL_CONNECTION_STRING: Your Azure SQL Database connection string
+# - AZURE_WEBAPP_PUBLISH_PROFILE: Publish profile from Azure App Service
