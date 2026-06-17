@@ -1,103 +1,187 @@
-name: Build, Migrate, and Deploy Payroll App
+name: Branch Environment ACR Deployment
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ dev, qa, uat, prod ]
   pull_request:
-    branches: [ main ]
+    branches: [ dev, qa, uat, prod ]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        required: true
+        type: choice
+        options:
+        - dev
+        - qa
+        - uat
+        - prod
 
-env:
-  DOTNET_VERSION: '8.0.x'
-  AZURE_WEBAPP_NAME: 'your-webapp-name'
-  
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  build:
-    runs-on: windows-latest
-    
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    defaults:
+      run:
+        working-directory: infra/terraform
+
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
       with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
+        terraform_version: 1.9.8
 
-    - name: Restore dependencies
-      run: dotnet restore
+    - name: Terraform Format Check
+      run: terraform fmt -check -recursive
 
-    - name: Build
-      run: dotnet build --configuration Release --no-restore
+    - name: Terraform Init Without Backend
+      run: terraform init -backend=false
 
-    - name: Publish
-      run: dotnet publish --configuration Release --output ./publish --no-build
+    - name: Terraform Validate
+      run: terraform validate
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: payroll-app
-        path: ./publish
+  resolve_environment:
+    name: Resolve Deployment Environment
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
 
-  database-migration:
-    runs-on: windows-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Install EF Core Tools
-      run: dotnet tool install --global dotnet-ef --version 8.0.0
-
-    - name: Restore dependencies
-      run: dotnet restore
-
-    - name: Generate Migration Script
+    - name: Resolve environment
+      id: resolve
+      shell: bash
       run: |
-        dotnet ef migrations script --idempotent --output ./migration.sql
-      
-    - name: Apply Database Migrations
-      run: |
-        dotnet ef database update --connection "${{ secrets.AZURE_SQL_CONNECTION_STRING }}"
-      env:
-        ConnectionStrings__DefaultConnection: ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          TARGET_ENV="${{ inputs.environment }}"
+        else
+          TARGET_ENV="${GITHUB_REF_NAME}"
+        fi
 
-    - name: Upload migration script
-      uses: actions/upload-artifact@v4
-      with:
-        name: migration-script
-        path: ./migration.sql
+        case "$TARGET_ENV" in
+          dev|qa|uat|prod) ;;
+          *)
+            echo "Unsupported deployment branch or environment: $TARGET_ENV" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "environment=$TARGET_ENV" >> "$GITHUB_OUTPUT"
 
   deploy:
-    runs-on: windows-latest
-    needs: database-migration
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: 'Production'
-      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
-    
+    name: Deploy ${{ needs.resolve_environment.outputs.environment }} Infra and Image
+    runs-on: ubuntu-latest
+    needs: resolve_environment
+    if: needs.resolve_environment.outputs.environment != ''
+    environment: ${{ needs.resolve_environment.outputs.environment }}
+    concurrency: payroll-${{ needs.resolve_environment.outputs.environment }}
+
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: payroll-app
-        path: ./publish
+    - name: Checkout
+      uses: actions/checkout@v4
 
-    - name: Deploy to Azure Web App
-      id: deploy-to-webapp
-      uses: azure/webapps-deploy@v2
+    - name: Azure Login
+      uses: azure/login@v2
       with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: ./publish
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-# Required GitHub Secrets:
-# - AZURE_SQL_CONNECTION_STRING: Your Azure SQL Database connection string
-# - AZURE_WEBAPP_PUBLISH_PROFILE: Publish profile from Azure App Service
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.8
+
+    - name: Terraform Format Check
+      working-directory: infra/terraform
+      run: terraform fmt -check -recursive
+
+    - name: Terraform Init
+      working-directory: infra/terraform
+      run: |
+        terraform init \
+          -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+          -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+          -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+          -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+    - name: Terraform Validate
+      working-directory: infra/terraform
+      run: terraform validate
+
+    - name: Terraform Plan
+      working-directory: infra/terraform
+      run: |
+        terraform plan \
+          -input=false \
+          -out=tfplan \
+          -var="location=${{ vars.AZURE_LOCATION }}" \
+          -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+          -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP }}" \
+          -var="acr_name=${{ vars.ACR_NAME }}" \
+          -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+          -var="create_acr=${{ vars.CREATE_ACR }}"
+
+    - name: Terraform Apply
+      working-directory: infra/terraform
+      run: terraform apply -input=false -auto-approve tfplan
+
+    - name: Read Terraform Outputs
+      id: tf_outputs
+      working-directory: infra/terraform
+      run: |
+        echo "acr_name=$(terraform output -raw acr_name)" >> "$GITHUB_OUTPUT"
+        echo "acr_login_server=$(terraform output -raw acr_login_server)" >> "$GITHUB_OUTPUT"
+
+    - name: ACR Login
+      run: az acr login --name "${{ steps.tf_outputs.outputs.acr_name }}"
+
+    - name: Build and Push Docker Image
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+      run: |
+        IMAGE_URI_SHA="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:$IMAGE_TAG_SHA"
+        IMAGE_URI_LATEST="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:latest"
+
+        docker build -t "$IMAGE_URI_SHA" -t "$IMAGE_URI_LATEST" .
+        docker push "$IMAGE_URI_SHA"
+        docker push "$IMAGE_URI_LATEST"
+
+    - name: Publish Image Metadata
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+      run: |
+        IMAGE_URI_SHA="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:$IMAGE_TAG_SHA"
+        IMAGE_URI_LATEST="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:latest"
+        {
+          echo "### ${{ needs.resolve_environment.outputs.environment }} image"
+          echo ""
+          echo "- ACR: ${{ steps.tf_outputs.outputs.acr_name }}"
+          echo "- Repository: $IMAGE_REPOSITORY"
+          echo "- SHA tag: $IMAGE_URI_SHA"
+          echo "- Latest tag: $IMAGE_URI_LATEST"
+        } >> "$GITHUB_STEP_SUMMARY"

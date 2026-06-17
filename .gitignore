@@ -18,3 +18,11 @@ Thumbs.db
 node_modules/
 wwwroot/lib/
 appsettings.Development.json
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+.terraform.lock.hcl
