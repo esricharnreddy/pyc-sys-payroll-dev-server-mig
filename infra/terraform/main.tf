@@ -9,6 +9,7 @@ locals {
   effective_resource_group_name     = var.create_resource_group ? azurerm_resource_group.this[0].name : var.resource_group_name
   effective_acr_resource_group_name = coalesce(var.acr_resource_group_name, local.effective_resource_group_name)
   effective_aks_resource_group_name = coalesce(var.aks_resource_group_name, local.effective_resource_group_name)
+  effective_sql_location            = coalesce(var.sql_location, var.location)
 
   effective_acr_name         = var.create_acr ? azurerm_container_registry.this[0].name : data.azurerm_container_registry.this[0].name
   effective_acr_login_server = var.create_acr ? azurerm_container_registry.this[0].login_server : data.azurerm_container_registry.this[0].login_server
@@ -39,7 +40,7 @@ resource "azurerm_mssql_server" "this" {
   count                        = var.create_sql ? 1 : 0
   name                         = var.sql_server_name
   resource_group_name          = local.effective_resource_group_name
-  location                     = var.location
+  location                     = local.effective_sql_location
   version                      = "12.0"
   administrator_login          = var.sql_admin_username
   administrator_login_password = var.sql_admin_password

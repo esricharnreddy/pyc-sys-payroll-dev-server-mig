@@ -69,6 +69,12 @@ variable "sql_server_name" {
   default     = ""
 }
 
+variable "sql_location" {
+  description = "Azure region for the SQL logical server. Defaults to location when not provided."
+  type        = string
+  default     = null
+}
+
 variable "sql_database_name" {
   description = "Azure SQL database name."
   type        = string

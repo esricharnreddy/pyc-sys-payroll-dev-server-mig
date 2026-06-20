@@ -18,6 +18,11 @@ output "sql_server_fqdn" {
   value       = var.create_sql ? azurerm_mssql_server.this[0].fully_qualified_domain_name : null
 }
 
+output "sql_location" {
+  description = "Azure region used by the Azure SQL logical server."
+  value       = var.create_sql ? local.effective_sql_location : null
+}
+
 output "sql_database_name" {
   description = "Azure SQL database name."
   value       = var.create_sql ? azurerm_mssql_database.this[0].name : null
