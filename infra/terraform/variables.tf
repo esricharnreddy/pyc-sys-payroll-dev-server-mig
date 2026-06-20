@@ -117,7 +117,7 @@ variable "sql_allowed_ip_addresses" {
 # ---------------------------------------------------------------------------
 
 variable "configure_aks" {
-  description = "Whether to look up the existing AKS cluster and grant it AcrPull on the ACR. Defaults to false."
+  description = "Whether to look up the existing AKS cluster. AcrPull creation is controlled separately by grant_aks_acr_pull."
   type        = bool
   default     = false
 }
@@ -137,5 +137,5 @@ variable "aks_resource_group_name" {
 variable "grant_aks_acr_pull" {
   description = "Whether to grant the AKS kubelet identity AcrPull on the ACR."
   type        = bool
-  default     = true
+  default     = false
 }

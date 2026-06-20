@@ -51,15 +51,15 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_create_sql: "${{ vars.CREATE_SQL || 'false' }}"
       TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
       TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
       TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
       TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
-      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_configure_aks: "${{ vars.CONFIGURE_AKS || 'false' }}"
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
-      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
+      TF_VAR_grant_aks_acr_pull: "${{ vars.GRANT_AKS_ACR_PULL || 'false' }}"
 
     defaults:
       run:
@@ -203,15 +203,15 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_create_sql: "${{ vars.CREATE_SQL || 'false' }}"
       TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
       TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
       TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
       TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
-      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_configure_aks: "${{ vars.CONFIGURE_AKS || 'false' }}"
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
-      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
+      TF_VAR_grant_aks_acr_pull: "false"
 
     defaults:
       run:
@@ -355,15 +355,15 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_create_sql: "${{ vars.CREATE_SQL || 'false' }}"
       TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
       TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
       TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
       TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
-      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_configure_aks: "${{ vars.CONFIGURE_AKS || 'false' }}"
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
-      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
+      TF_VAR_grant_aks_acr_pull: "false"
 
     defaults:
       run:
@@ -507,15 +507,15 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_create_sql: "${{ vars.CREATE_SQL || 'false' }}"
       TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
       TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
       TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
       TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
-      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_configure_aks: "${{ vars.CONFIGURE_AKS || 'false' }}"
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
-      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
+      TF_VAR_grant_aks_acr_pull: "false"
 
     defaults:
       run:
