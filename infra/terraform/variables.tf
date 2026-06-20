@@ -52,3 +52,84 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# ---------------------------------------------------------------------------
+# Azure SQL Database
+# ---------------------------------------------------------------------------
+
+variable "create_sql" {
+  description = "Whether Terraform should create the Azure SQL server and database. Defaults to false so existing pipelines stay green until configured."
+  type        = bool
+  default     = false
+}
+
+variable "sql_server_name" {
+  description = "Globally-unique Azure SQL logical server name (lowercase alphanumeric and hyphens). Required only when create_sql = true."
+  type        = string
+  default     = ""
+}
+
+variable "sql_database_name" {
+  description = "Azure SQL database name."
+  type        = string
+  default     = "PayrollDB"
+}
+
+variable "sql_admin_username" {
+  description = "Azure SQL administrator login. Required only when create_sql = true."
+  type        = string
+  default     = ""
+}
+
+variable "sql_admin_password" {
+  description = "Azure SQL administrator password. Provide via TF_VAR_sql_admin_password / pipeline secret. Required only when create_sql = true."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "sql_database_sku" {
+  description = "Azure SQL database SKU (e.g. Basic, S0, S1)."
+  type        = string
+  default     = "Basic"
+}
+
+variable "sql_max_size_gb" {
+  description = "Maximum database size in GB."
+  type        = number
+  default     = 2
+}
+
+variable "sql_allowed_ip_addresses" {
+  description = "Map of name => IP address allowed through the SQL firewall (e.g. your machine for data migration)."
+  type        = map(string)
+  default     = {}
+}
+
+# ---------------------------------------------------------------------------
+# Existing AKS cluster (data source) + ACR pull
+# ---------------------------------------------------------------------------
+
+variable "configure_aks" {
+  description = "Whether to look up the existing AKS cluster and grant it AcrPull on the ACR. Defaults to false."
+  type        = bool
+  default     = false
+}
+
+variable "aks_cluster_name" {
+  description = "Name of the existing AKS cluster. Required only when configure_aks = true."
+  type        = string
+  default     = ""
+}
+
+variable "aks_resource_group_name" {
+  description = "Resource group that owns the existing AKS cluster. Defaults to resource_group_name when not provided."
+  type        = string
+  default     = null
+}
+
+variable "grant_aks_acr_pull" {
+  description = "Whether to grant the AKS kubelet identity AcrPull on the ACR."
+  type        = bool
+  default     = true
+}

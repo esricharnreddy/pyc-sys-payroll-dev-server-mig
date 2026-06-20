@@ -51,6 +51,14 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
 
     defaults:
       run:
@@ -146,6 +154,42 @@ jobs:
           echo "- Latest tag: $IMAGE_URI_LATEST"
         } >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Read SQL FQDN
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      id: sql
+      working-directory: infra/terraform
+      run: echo "fqdn=$(terraform output -raw sql_server_fqdn)" >> "$GITHUB_OUTPUT"
+
+    - name: Get AKS Credentials
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: az aks get-credentials --name "${{ vars.AKS_CLUSTER_NAME }}" --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" --overwrite-existing
+
+    - name: Setup Kubectl
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      uses: azure/setup-kubectl@v4
+
+    - name: Install Manifest Tools
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+    - name: Deploy to AKS
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+        K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'payroll-dev' }}
+        SQL_FQDN: ${{ steps.sql.outputs.fqdn }}
+      run: |
+        export IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG_SHA}"
+        envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+        kubectl create secret generic payroll-db -n "${K8S_NAMESPACE}" \
+          --from-literal=connection-string="Server=tcp:${SQL_FQDN},1433;Initial Catalog=PayrollDB;User ID=${{ vars.SQL_ADMIN_USERNAME }};Password=${{ secrets.SQL_ADMIN_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+        envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+        kubectl rollout status deployment/payroll-app -n "${K8S_NAMESPACE}" --timeout=180s
+
   deploy_qa:
     name: Deploy qa Infra and Image
     runs-on: ubuntu-latest
@@ -158,6 +202,14 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
 
     defaults:
       run:
@@ -253,6 +305,42 @@ jobs:
           echo "- Latest tag: $IMAGE_URI_LATEST"
         } >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Read SQL FQDN
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      id: sql
+      working-directory: infra/terraform
+      run: echo "fqdn=$(terraform output -raw sql_server_fqdn)" >> "$GITHUB_OUTPUT"
+
+    - name: Get AKS Credentials
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: az aks get-credentials --name "${{ vars.AKS_CLUSTER_NAME }}" --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" --overwrite-existing
+
+    - name: Setup Kubectl
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      uses: azure/setup-kubectl@v4
+
+    - name: Install Manifest Tools
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+    - name: Deploy to AKS
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+        K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'payroll-qa' }}
+        SQL_FQDN: ${{ steps.sql.outputs.fqdn }}
+      run: |
+        export IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG_SHA}"
+        envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+        kubectl create secret generic payroll-db -n "${K8S_NAMESPACE}" \
+          --from-literal=connection-string="Server=tcp:${SQL_FQDN},1433;Initial Catalog=PayrollDB;User ID=${{ vars.SQL_ADMIN_USERNAME }};Password=${{ secrets.SQL_ADMIN_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+        envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+        kubectl rollout status deployment/payroll-app -n "${K8S_NAMESPACE}" --timeout=180s
+
   deploy_uat:
     name: Deploy uat Infra and Image
     runs-on: ubuntu-latest
@@ -265,6 +353,14 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
 
     defaults:
       run:
@@ -360,6 +456,42 @@ jobs:
           echo "- Latest tag: $IMAGE_URI_LATEST"
         } >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Read SQL FQDN
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      id: sql
+      working-directory: infra/terraform
+      run: echo "fqdn=$(terraform output -raw sql_server_fqdn)" >> "$GITHUB_OUTPUT"
+
+    - name: Get AKS Credentials
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: az aks get-credentials --name "${{ vars.AKS_CLUSTER_NAME }}" --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" --overwrite-existing
+
+    - name: Setup Kubectl
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      uses: azure/setup-kubectl@v4
+
+    - name: Install Manifest Tools
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+    - name: Deploy to AKS
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+        K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'payroll-uat' }}
+        SQL_FQDN: ${{ steps.sql.outputs.fqdn }}
+      run: |
+        export IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG_SHA}"
+        envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+        kubectl create secret generic payroll-db -n "${K8S_NAMESPACE}" \
+          --from-literal=connection-string="Server=tcp:${SQL_FQDN},1433;Initial Catalog=PayrollDB;User ID=${{ vars.SQL_ADMIN_USERNAME }};Password=${{ secrets.SQL_ADMIN_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+        envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+        kubectl rollout status deployment/payroll-app -n "${K8S_NAMESPACE}" --timeout=180s
+
   deploy_prod:
     name: Deploy prod Infra and Image
     runs-on: ubuntu-latest
@@ -372,6 +504,14 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'true' }}
 
     defaults:
       run:
@@ -466,3 +606,39 @@ jobs:
           echo "- SHA tag: $IMAGE_URI_SHA"
           echo "- Latest tag: $IMAGE_URI_LATEST"
         } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Read SQL FQDN
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      id: sql
+      working-directory: infra/terraform
+      run: echo "fqdn=$(terraform output -raw sql_server_fqdn)" >> "$GITHUB_OUTPUT"
+
+    - name: Get AKS Credentials
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: az aks get-credentials --name "${{ vars.AKS_CLUSTER_NAME }}" --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" --overwrite-existing
+
+    - name: Setup Kubectl
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      uses: azure/setup-kubectl@v4
+
+    - name: Install Manifest Tools
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+    - name: Deploy to AKS
+      if: ${{ vars.CONFIGURE_AKS == 'true' }}
+      env:
+        ACR_LOGIN_SERVER: ${{ steps.tf_outputs.outputs.acr_login_server }}
+        IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        IMAGE_TAG_SHA: ${{ github.sha }}
+        K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'payroll-prod' }}
+        SQL_FQDN: ${{ steps.sql.outputs.fqdn }}
+      run: |
+        export IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG_SHA}"
+        envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+        kubectl create secret generic payroll-db -n "${K8S_NAMESPACE}" \
+          --from-literal=connection-string="Server=tcp:${SQL_FQDN},1433;Initial Catalog=PayrollDB;User ID=${{ vars.SQL_ADMIN_USERNAME }};Password=${{ secrets.SQL_ADMIN_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+        envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+        kubectl rollout status deployment/payroll-app -n "${K8S_NAMESPACE}" --timeout=180s
