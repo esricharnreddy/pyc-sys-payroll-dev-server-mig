@@ -120,6 +120,43 @@ jobs:
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=${{ vars.TF_STATE_KEY }}"
 
+      - name: Import existing AKS AcrPull role assignment
+        if: vars.CONFIGURE_AKS == 'true' && vars.GRANT_AKS_ACR_PULL == 'true'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          ACR_RESOURCE_GROUP_NAME: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: |
+          acr_resource_group="${ACR_RESOURCE_GROUP_NAME:-$RESOURCE_GROUP_NAME}"
+          aks_resource_group="${AKS_RESOURCE_GROUP:-$RESOURCE_GROUP_NAME}"
+
+          acr_id="$(az acr show --name "$ACR_NAME" --resource-group "$acr_resource_group" --query id -o tsv 2>/dev/null || true)"
+          if [ -z "$acr_id" ]; then
+            echo "ACR '$ACR_NAME' was not found yet. Skipping AcrPull import."
+            exit 0
+          fi
+
+          kubelet_principal_id="$(az aks show --name "$AKS_CLUSTER_NAME" --resource-group "$aks_resource_group" --query identityProfile.kubeletidentity.objectId -o tsv 2>/dev/null || true)"
+          if [ -z "$kubelet_principal_id" ]; then
+            echo "AKS kubelet identity was not found. Skipping AcrPull import."
+            exit 0
+          fi
+
+          assignment_id="$(az role assignment list --scope "$acr_id" --assignee "$kubelet_principal_id" --role AcrPull --query '[0].id' -o tsv 2>/dev/null || true)"
+          if [ -z "$assignment_id" ]; then
+            echo "No existing AcrPull assignment found. Terraform will create it if needed."
+            exit 0
+          fi
+
+          if terraform state show 'azurerm_role_assignment.aks_acr_pull[0]' >/dev/null 2>&1; then
+            echo "AcrPull role assignment is already managed by Terraform state."
+            exit 0
+          fi
+
+          terraform import -input=false 'azurerm_role_assignment.aks_acr_pull[0]' "$assignment_id"
+
       - name: Terraform Plan
         run: |
           terraform plan \
@@ -215,6 +252,43 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Import existing AKS AcrPull role assignment
+        if: vars.CONFIGURE_AKS == 'true' && vars.GRANT_AKS_ACR_PULL == 'true'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          ACR_RESOURCE_GROUP_NAME: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: |
+          acr_resource_group="${ACR_RESOURCE_GROUP_NAME:-$RESOURCE_GROUP_NAME}"
+          aks_resource_group="${AKS_RESOURCE_GROUP:-$RESOURCE_GROUP_NAME}"
+
+          acr_id="$(az acr show --name "$ACR_NAME" --resource-group "$acr_resource_group" --query id -o tsv 2>/dev/null || true)"
+          if [ -z "$acr_id" ]; then
+            echo "ACR '$ACR_NAME' was not found yet. Skipping AcrPull import."
+            exit 0
+          fi
+
+          kubelet_principal_id="$(az aks show --name "$AKS_CLUSTER_NAME" --resource-group "$aks_resource_group" --query identityProfile.kubeletidentity.objectId -o tsv 2>/dev/null || true)"
+          if [ -z "$kubelet_principal_id" ]; then
+            echo "AKS kubelet identity was not found. Skipping AcrPull import."
+            exit 0
+          fi
+
+          assignment_id="$(az role assignment list --scope "$acr_id" --assignee "$kubelet_principal_id" --role AcrPull --query '[0].id' -o tsv 2>/dev/null || true)"
+          if [ -z "$assignment_id" ]; then
+            echo "No existing AcrPull assignment found. Terraform will create it if needed."
+            exit 0
+          fi
+
+          if terraform state show 'azurerm_role_assignment.aks_acr_pull[0]' >/dev/null 2>&1; then
+            echo "AcrPull role assignment is already managed by Terraform state."
+            exit 0
+          fi
+
+          terraform import -input=false 'azurerm_role_assignment.aks_acr_pull[0]' "$assignment_id"
 
       - name: Terraform Plan
         run: |
@@ -312,6 +386,43 @@ jobs:
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=${{ vars.TF_STATE_KEY }}"
 
+      - name: Import existing AKS AcrPull role assignment
+        if: vars.CONFIGURE_AKS == 'true' && vars.GRANT_AKS_ACR_PULL == 'true'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          ACR_RESOURCE_GROUP_NAME: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: |
+          acr_resource_group="${ACR_RESOURCE_GROUP_NAME:-$RESOURCE_GROUP_NAME}"
+          aks_resource_group="${AKS_RESOURCE_GROUP:-$RESOURCE_GROUP_NAME}"
+
+          acr_id="$(az acr show --name "$ACR_NAME" --resource-group "$acr_resource_group" --query id -o tsv 2>/dev/null || true)"
+          if [ -z "$acr_id" ]; then
+            echo "ACR '$ACR_NAME' was not found yet. Skipping AcrPull import."
+            exit 0
+          fi
+
+          kubelet_principal_id="$(az aks show --name "$AKS_CLUSTER_NAME" --resource-group "$aks_resource_group" --query identityProfile.kubeletidentity.objectId -o tsv 2>/dev/null || true)"
+          if [ -z "$kubelet_principal_id" ]; then
+            echo "AKS kubelet identity was not found. Skipping AcrPull import."
+            exit 0
+          fi
+
+          assignment_id="$(az role assignment list --scope "$acr_id" --assignee "$kubelet_principal_id" --role AcrPull --query '[0].id' -o tsv 2>/dev/null || true)"
+          if [ -z "$assignment_id" ]; then
+            echo "No existing AcrPull assignment found. Terraform will create it if needed."
+            exit 0
+          fi
+
+          if terraform state show 'azurerm_role_assignment.aks_acr_pull[0]' >/dev/null 2>&1; then
+            echo "AcrPull role assignment is already managed by Terraform state."
+            exit 0
+          fi
+
+          terraform import -input=false 'azurerm_role_assignment.aks_acr_pull[0]' "$assignment_id"
+
       - name: Terraform Plan
         run: |
           terraform plan \
@@ -407,6 +518,43 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Import existing AKS AcrPull role assignment
+        if: vars.CONFIGURE_AKS == 'true' && vars.GRANT_AKS_ACR_PULL == 'true'
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          ACR_RESOURCE_GROUP_NAME: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: |
+          acr_resource_group="${ACR_RESOURCE_GROUP_NAME:-$RESOURCE_GROUP_NAME}"
+          aks_resource_group="${AKS_RESOURCE_GROUP:-$RESOURCE_GROUP_NAME}"
+
+          acr_id="$(az acr show --name "$ACR_NAME" --resource-group "$acr_resource_group" --query id -o tsv 2>/dev/null || true)"
+          if [ -z "$acr_id" ]; then
+            echo "ACR '$ACR_NAME' was not found yet. Skipping AcrPull import."
+            exit 0
+          fi
+
+          kubelet_principal_id="$(az aks show --name "$AKS_CLUSTER_NAME" --resource-group "$aks_resource_group" --query identityProfile.kubeletidentity.objectId -o tsv 2>/dev/null || true)"
+          if [ -z "$kubelet_principal_id" ]; then
+            echo "AKS kubelet identity was not found. Skipping AcrPull import."
+            exit 0
+          fi
+
+          assignment_id="$(az role assignment list --scope "$acr_id" --assignee "$kubelet_principal_id" --role AcrPull --query '[0].id' -o tsv 2>/dev/null || true)"
+          if [ -z "$assignment_id" ]; then
+            echo "No existing AcrPull assignment found. Terraform will create it if needed."
+            exit 0
+          fi
+
+          if terraform state show 'azurerm_role_assignment.aks_acr_pull[0]' >/dev/null 2>&1; then
+            echo "AcrPull role assignment is already managed by Terraform state."
+            exit 0
+          fi
+
+          terraform import -input=false 'azurerm_role_assignment.aks_acr_pull[0]' "$assignment_id"
 
       - name: Terraform Plan
         run: |

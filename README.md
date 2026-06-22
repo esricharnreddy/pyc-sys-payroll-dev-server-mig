@@ -260,6 +260,8 @@ Stage details:
 - `uat Infrastructure`: initializes backend, plans, applies, and publishes outputs for `uat`.
 - `prod Infrastructure`: initializes backend, plans, applies, and publishes outputs for `prod`.
 
+When `CONFIGURE_AKS=true` and `GRANT_AKS_ACR_PULL=true`, each environment job checks whether the AKS kubelet identity already has `AcrPull` on the target ACR. If the role assignment exists but is not yet in Terraform state, the workflow imports it before `terraform plan`. This prevents `RoleAssignmentExists` failures when the permission was previously granted outside the current Terraform state.
+
 For pull requests, only `Validate Terraform` runs. For manual runs, `target_environment` controls the environment path and `apply` controls whether Terraform changes are applied.
 
 ### App Code Build Pipeline
