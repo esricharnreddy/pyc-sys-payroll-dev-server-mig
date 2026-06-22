@@ -1,359 +1,186 @@
 # Payroll Application
 
-A modern, feature-rich payroll management system built with **ASP.NET Core 8.0** Razor Pages, **Entity Framework Core**, and **MySQL**. This application streamlines employee management, payroll processing, and payment tracking with automatic calculations and a clean, intuitive interface.
+A payroll management application built with ASP.NET Core 8 Razor Pages, Entity Framework Core, and Azure SQL Database. The app supports employee management, payroll processing, payment history, sample data seeding, Docker packaging, and optional Azure/Kubernetes deployment assets.
 
-## 📋 Table of Contents
-
-- [Features](#features)
-- [Technology Stack](#technology-stack)
-- [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [Project Structure](#project-structure)
-- [Usage Guide](#usage-guide)
-- [Database Management](#database-management)
-- [Docker Deployment](#docker-deployment)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Business Logic](#business-logic)
-- [Development](#development)
-- [Troubleshooting](#troubleshooting)
-
-## ✨ Features
+## Features
 
 ### Employee Management
-- ➕ **Create, Read, Update, Delete (CRUD)** operations for employees
-- 👥 Support for **Salaried** and **Hourly** employees
-- 📧 Employee information: ID, Name, Email, Department, Hire Date
-- 📊 Individual employee payroll history tracking
-- 🔍 Unique employee ID validation
+
+- Create, read, update, and delete employee records.
+- Support salaried and hourly employees.
+- Store employee ID, name, email, department, employment type, salary/rate, and hire date.
+- Enforce unique employee IDs.
+- Cascade-delete payroll history when an employee is removed.
 
 ### Payroll Processing
-- 💰 **Automated payroll calculations** with configurable pay periods
-- 📅 Flexible pay period date selection
-- ⏱️ Hours tracking for hourly employees
-- 🧮 **Automatic deductions**:
-  - Federal Tax: 15% of gross pay
+
+- Process payroll for a selected employee and pay period.
+- Calculate monthly gross pay for salaried employees.
+- Calculate hourly gross pay from hourly rate and hours worked.
+- Apply fixed deduction rules:
+  - Federal tax: 15% of gross pay
   - Social Security: 6.2% of gross pay
-  - Health Insurance: $200 (fixed monthly amount)
-- 📈 Real-time net pay calculation
-- 💳 Payment date tracking
+  - Health insurance: $200 fixed deduction
+- Save payroll records with gross pay, deductions, net pay, and payment date.
 
-### Payment History & Reporting
-- 📜 Comprehensive payroll history
-- 🔎 Filter by employee and date range
-- 💵 Detailed breakdown of:
-  - Gross Pay
-  - Individual deductions (Tax, Social Security, Health Insurance)
-  - Total deductions
-  - Net pay
-- 📊 Summary totals at bottom of history
+### Reporting
 
-### Dashboard & Analytics
-- 📈 Employee count statistics
-- 💼 Monthly payroll overview
-- 🎯 Quick access to key features
-- 📅 Recent payroll activity
+- Dashboard employee and payroll summaries.
+- Recent payroll activity.
+- Payment history with employee and date filters.
+- Payroll totals for filtered history results.
 
-### Data Management
-- 🎲 **Automatic database creation** on first run
-- 📦 **Sample data seeding** with 7 pre-configured employees
-- 🗄️ Cascade delete: removing an employee removes their payroll history
-- 🔐 Database connection string configuration
+## Technology Stack
 
-## 🛠️ Technology Stack
+- ASP.NET Core 8.0
+- Razor Pages
+- Entity Framework Core 8.0
+- Microsoft SQL Server provider for EF Core
+- Azure SQL Database
+- Bootstrap 5
+- Docker
+- Terraform and Kubernetes manifests for Azure deployment scenarios
+- GitHub Actions workflow for environment deployments
 
-- **Framework**: ASP.NET Core 8.0
-- **UI**: Razor Pages with Bootstrap
-- **Database**: MySQL 8.0+
-- **ORM**: Entity Framework Core 8.0
-- **MySQL Provider**: Pomelo.EntityFrameworkCore.MySql 8.0
-- **Language**: C# 12 (.NET 8)
-- **Architecture**: Model-View-Controller pattern with Razor Pages
-- **Dependency Injection**: Built-in ASP.NET Core DI
-- **Containerization**: Docker support
-- **CI/CD**: Azure DevOps Pipeline
-
-## 📦 Prerequisites
+## Prerequisites
 
 ### Required
-- **[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)** or later
-- **MySQL Server 8.0+** (local or remote)
-- **MySQL User** with database creation privileges
+
+- .NET 8 SDK or later
+- Access to SQL Server LocalDB for local development, or an Azure SQL Database connection string
 
 ### Optional
-- **Docker** (for containerized deployment)
-- **Visual Studio 2022** or **VS Code** (for development)
-- **Azure DevOps** (for CI/CD pipeline)
 
-## 🚀 Getting Started
+- Docker
+- Visual Studio 2022 or VS Code with C# Dev Kit
+- Terraform CLI for infrastructure changes
+- Azure CLI and kubectl for Azure/Kubernetes deployment
 
-### 1. Install .NET SDK
+## Getting Started
 
-Download and install the .NET 8 SDK from: https://dotnet.microsoft.com/download/dotnet/8.0
+### 1. Install .NET 8 SDK
+
+Download and install the .NET 8 SDK from:
+
+https://dotnet.microsoft.com/download/dotnet/8.0
 
 Verify installation:
+
 ```powershell
 dotnet --version
-# Should display: 8.0.xxx
 ```
 
-### 2. Setup MySQL Database
+### 2. Configure the Database
 
-**Option A: Local MySQL Installation**
-- Install MySQL Server 8.0+ from [mysql.com](https://dev.mysql.com/downloads/)
-- Create a database user:
-```sql
-CREATE USER 'payroll_app'@'localhost' IDENTIFIED BY 'PayrollApp@2026';
-GRANT ALL PRIVILEGES ON PayrollDB.* TO 'payroll_app'@'localhost';
-FLUSH PRIVILEGES;
+For local development, the default connection string uses SQL Server LocalDB:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=PayrollDB;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True;"
+  }
+}
 ```
 
-**Option B: Use Existing MySQL Server**
-- Update connection string in [appsettings.json](appsettings.json) with your credentials
-
-### 3. Clone and Navigate to Project
+For Azure SQL Database, set `ConnectionStrings__DefaultConnection` in your environment, container, Kubernetes Secret, or hosting platform configuration:
 
 ```powershell
-cd "c:\Db-migration\sample pay v2\sample-pay"
+$env:ConnectionStrings__DefaultConnection = "Server=tcp:<sql-server-name>.database.windows.net,1433;Initial Catalog=PayrollDB;User ID=<sql-admin-user>;Password=<sql-admin-password>;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
 ```
 
-### 4. Restore NuGet Packages
+Use confirmed Azure resource names and secrets from your environment. Do not commit real credentials to the repository.
+
+### 3. Restore Packages
 
 ```powershell
 dotnet restore
 ```
 
-### 5. Run the Application
+### 4. Run the Application
 
 ```powershell
 dotnet run
 ```
 
 The application will:
-1. ✅ Automatically create the database if it doesn't exist
-2. ✅ Apply schema migrations
-3. ✅ Seed sample data (7 employees)
-4. ✅ Start the web server
 
-**Expected output:**
+- Create the schema in the configured database if needed.
+- Seed 7 sample employees when the employee table is empty.
+- Start the web server.
+
+Open the URL shown in the terminal, commonly `https://localhost:5001` or `http://localhost:5000`.
+
+## Project Structure
+
+```text
+pyc-sys-payroll-dev-server-mig/
+|-- Program.cs                         # Application startup and service configuration
+|-- PayrollApp.csproj                  # .NET project and package references
+|-- appsettings.json                   # Local configuration and default connection string
+|-- Dockerfile                         # Container build definition
+|-- global.json                        # .NET SDK version policy
+|-- QUICKSTART.md                      # Quick run guide
+|-- SETUP.md                           # Setup notes
+|-- Data/                              # EF Core DbContext and seeding
+|-- Models/                            # Employee and payroll entities
+|-- Services/                          # Payroll calculation service
+|-- Pages/                             # Razor Pages UI
+|-- Properties/                        # Launch settings
+|-- wwwroot/                           # Static CSS and JavaScript
+|-- infra/terraform/                   # Azure infrastructure definitions
+|-- k8s/                               # Kubernetes manifests
+`-- .github/workflows/                 # GitHub Actions deployment workflow
 ```
-Building...
-info: Microsoft.Hosting.Lifetime[14]
-      Now listening on: https://localhost:5001
-info: Microsoft.Hosting.Lifetime[14]
-      Now listening on: http://localhost:5000
-```
 
-### 6. Open in Browser
+## Configuration
 
-Navigate to: **https://localhost:5001** or **http://localhost:5000**
+### Database Connection
 
-## ⚙️ Configuration
+The app reads the `DefaultConnection` connection string from ASP.NET Core configuration.
 
-### Database Connection String
-
-Edit [appsettings.json](appsettings.json):
+Local default in `appsettings.json`:
 
 ```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Port=3306;Database=PayrollDB;User=payroll_app;Password=PayrollApp@2026;"
-  }
+"ConnectionStrings": {
+  "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=PayrollDB;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True;"
 }
 ```
 
-**Connection String Parameters:**
-- `Server`: MySQL server hostname (default: `localhost`)
-- `Port`: MySQL port (default: `3306`)
-- `Database`: Database name (will be auto-created)
-- `User`: MySQL username
-- `Password`: MySQL password
+Production or containerized deployments should override this value with `ConnectionStrings__DefaultConnection`.
+
+Azure SQL format:
+
+```text
+Server=tcp:<sql-server-name>.database.windows.net,1433;Initial Catalog=PayrollDB;User ID=<sql-admin-user>;Password=<sql-admin-password>;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;
+```
 
 ### Payroll Calculation Constants
 
-Deduction rates are defined in [PayrollCalculationService.cs](Services/PayrollCalculationService.cs):
+Deduction constants are defined in `Services/PayrollCalculationService.cs`:
 
 ```csharp
-private const decimal TaxRate = 0.15m;                    // 15%
-private const decimal SocialSecurityRate = 0.062m;        // 6.2%
-private const decimal HealthInsuranceAmount = 200m;       // $200 fixed
+private const decimal TaxRate = 0.15m;
+private const decimal SocialSecurityRate = 0.062m;
+private const decimal HealthInsuranceAmount = 200m;
 ```
 
-To modify rates, edit these constants and rebuild the application.
+## Database Management
 
-## 📁 Project Structure
+On startup, `Data/DbInitializer.cs` calls `EnsureCreated()` and seeds sample employees when no employees exist. This is simple and convenient for development or demo environments.
 
-```
-sample-pay/
-├── 📄 Program.cs                          # Application entry point & configuration
-├── 📄 PayrollApp.csproj                   # Project file with dependencies
-├── 📄 appsettings.json                    # Configuration (connection strings, logging)
-├── 📄 Dockerfile                          # Docker container configuration
-├── 📄 azure-pipelines.yml                 # Azure DevOps CI/CD pipeline
-├── 📄 README.md                           # This file
-├── 📄 SETUP.md                            # Detailed setup guide
-├── 📄 QUICKSTART.md                       # Quick reference guide
-│
-├── 📂 Data/                               # Database layer
-│   ├── ApplicationDbContext.cs            # EF Core DbContext
-│   └── DbInitializer.cs                   # Database seeding logic
-│
-├── 📂 Models/                             # Domain models (entities)
-│   ├── Employee.cs                        # Employee entity
-│   ├── PayrollRecord.cs                   # Payroll record entity
-│   └── EmploymentType.cs                  # Enum: Salaried, Hourly
-│
-├── 📂 Services/                           # Business logic layer
-│   └── PayrollCalculationService.cs       # Payroll calculation engine
-│
-├── 📂 Pages/                              # Razor Pages (Views + Controllers)
-│   ├── Index.cshtml/.cs                   # Dashboard
-│   ├── Error.cshtml/.cs                   # Error page
-│   ├── _ViewImports.cshtml                # Global view imports
-│   ├── _ViewStart.cshtml                  # Layout configuration
-│   │
-│   ├── 📂 Employees/                      # Employee management
-│   │   ├── Index.cshtml/.cs               # List all employees
-│   │   ├── Create.cshtml/.cs              # Add new employee
-│   │   ├── Edit.cshtml/.cs                # Edit employee
-│   │   ├── Details.cshtml/.cs             # View employee details
-│   │   └── Delete.cshtml/.cs              # Delete employee
-│   │
-│   ├── 📂 Payroll/                        # Payroll operations
-│   │   ├── Process.cshtml/.cs             # Process payroll
-│   │   └── History.cshtml/.cs             # View payment history
-│   │
-│   └── 📂 Shared/                         # Shared layouts
-│       ├── _Layout.cshtml                 # Main layout template
-│       └── _ValidationScriptsPartial.cshtml
-│
-├── 📂 Properties/
-│   └── launchSettings.json                # Development server configuration
-│
-└── 📂 wwwroot/                            # Static web assets
-    ├── 📂 css/
-    │   └── site.css                       # Custom styles
-    └── 📂 js/
-        └── site.js                        # Custom JavaScript
+There is currently no `Migrations/` folder in this repository. If you want migration-based database lifecycle management, create an initial migration and switch operational processes to `dotnet ef database update`.
+
+Common EF commands:
+
+```powershell
+dotnet ef migrations add InitialCreate
+dotnet ef database update
+dotnet ef migrations script
 ```
 
-## 📖 Usage Guide
+## Sample Data
 
-### Adding Employees
-
-1. Click **"Employees"** in the navigation menu
-2. Click **"Add New Employee"** button
-3. Fill in the required fields:
-   - **Employee ID**: Unique identifier (e.g., EMP001)
-   - **Name**: Full name
-   - **Email**: Valid email address
-   - **Department**: Department name (optional)
-   - **Employment Type**: Select "Salaried" or "Hourly"
-   - **Annual Salary** (for salaried) OR **Hourly Rate** (for hourly)
-   - **Hire Date**: Date of hire
-4. Click **"Create Employee"**
-
-**Example - Salaried Employee:**
-- Employee ID: `EMP101`
-- Name: `Alice Williams`
-- Email: `alice.williams@company.com`
-- Department: `Finance`
-- Employment Type: `Salaried`
-- Annual Salary: `$80,000`
-- Hire Date: `2026-01-15`
-
-**Example - Hourly Employee:**
-- Employee ID: `EMP102`
-- Name: `Bob Johnson`
-- Email: `bob.johnson@company.com`
-- Department: `Warehouse`
-- Employment Type: `Hourly`
-- Hourly Rate: `$28.50`
-- Hire Date: `2026-02-01`
-
-### Processing Payroll
-
-1. Click **"Process Payroll"** in the navigation menu
-2. **Select an employee** from the dropdown
-3. **Set Pay Period**:
-   - Pay Period Start Date
-   - Pay Period End Date
-4. **For Hourly Employees**: Enter hours worked (e.g., 160 hours)
-5. Click **"Calculate Payroll"**
-6. Review the calculation breakdown:
-   - Gross Pay
-   - Tax Deduction (15%)
-   - Social Security (6.2%)
-   - Health Insurance ($200)
-   - **Net Pay** (amount employee receives)
-7. Click **"Process Payment"** to save the record
-
-**Calculation Example (Salaried - $75,000/year):**
-```
-Monthly Gross Pay:     $6,250.00
-- Tax (15%):          -$  937.50
-- Social Security:    -$  387.50
-- Health Insurance:   -$  200.00
-─────────────────────────────────
-Total Deductions:      $1,525.00
-Net Pay:               $4,725.00
-```
-
-**Calculation Example (Hourly - $30/hour × 160 hours):**
-```
-Gross Pay:             $4,800.00
-- Tax (15%):          -$  720.00
-- Social Security:    -$  297.60
-- Health Insurance:   -$  200.00
-─────────────────────────────────
-Total Deductions:      $1,217.60
-Net Pay:               $3,582.40
-```
-
-### Viewing Payment History
-
-1. Click **"Payment History"** in the navigation menu
-2. **Optional Filters**:
-   - **Employee**: Select specific employee (or "All Employees")
-   - **Date Range**: Set start and end dates
-3. Click **"Apply Filter"**
-4. View payroll records with:
-   - Employee name
-   - Pay period dates
-   - Hours worked (if hourly)
-   - Gross pay, deductions, net pay
-   - Payment date
-5. **Summary totals** appear at the bottom
-
-### Managing Employees
-
-**View Details:**
-- Click **"Details"** next to an employee to see:
-  - Complete employee information
-  - Full payroll history for that employee
-
-**Edit Employee:**
-- Click **"Edit"** to update employee information
-- Cannot change employment type after creation
-- Changes take effect immediately
-
-**Delete Employee:**
-- Click **"Delete"** next to an employee
-- ⚠️ **Warning**: This will also delete all payroll records for that employee
-- Confirm deletion when prompted
-
-## 🗄️ Database Management
-
-### Automatic Database Setup
-
-On first run, the application automatically:
-1. ✅ Creates the `PayrollDB` database if it doesn't exist
-2. ✅ Creates all required tables (`Employees`, `PayrollRecords`)
-3. ✅ Seeds 7 sample employees
-
-### Sample Data
-
-The application includes these pre-configured employees:
+The app seeds these employees on first run when the database is empty:
 
 | Employee ID | Name | Department | Type | Rate/Salary | Hire Date |
 |-------------|------|------------|------|-------------|-----------|
@@ -365,369 +192,230 @@ The application includes these pre-configured employees:
 | EMP006 | Lisa Anderson | Marketing | Salaried | $70,000/year | 2022-11-05 |
 | EMP007 | David Martinez | IT Support | Hourly | $35.00/hour | 2024-02-01 |
 
-### Entity Framework Core Migrations
+## Docker
 
-**Create a new migration:**
-```powershell
-dotnet ef migrations add MigrationName
-```
-
-**Apply migrations to database:**
-```powershell
-dotnet ef database update
-```
-
-**Remove last migration:**
-```powershell
-dotnet ef migrations remove
-```
-
-**View migration SQL:**
-```powershell
-dotnet ef migrations script
-```
-
-### Database Schema
-
-**Employees Table:**
-- `Id` (PK, Auto-increment)
-- `EmployeeId` (Unique, varchar(50))
-- `Name` (varchar(100))
-- `Email` (varchar(100))
-- `Department` (varchar(100), nullable)
-- `EmploymentType` (enum: 0=Salaried, 1=Hourly)
-- `AnnualSalary` (decimal(18,2), nullable)
-- `HourlyRate` (decimal(18,2), nullable)
-- `HireDate` (date)
-
-**PayrollRecords Table:**
-- `Id` (PK, Auto-increment)
-- `EmployeeId` (FK → Employees.Id, cascade delete)
-- `PayPeriodStart` (date)
-- `PayPeriodEnd` (date)
-- `HoursWorked` (decimal(18,2), nullable)
-- `GrossPay` (decimal(18,2))
-- `TaxAmount` (decimal(18,2))
-- `SocialSecurityAmount` (decimal(18,2))
-- `HealthInsuranceAmount` (decimal(18,2))
-- `TotalDeductions` (decimal(18,2))
-- `NetPay` (decimal(18,2))
-- `PaymentDate` (date)
-
-## 🐳 Docker Deployment
-
-### Build Docker Image
+Build the image:
 
 ```powershell
 docker build -t payroll-app:latest .
 ```
 
-### Run with Docker
+Run with an Azure SQL Database connection string:
 
 ```powershell
 docker run -d `
   -p 8080:80 `
-  -e ConnectionStrings__DefaultConnection="Server=host.docker.internal;Port=3306;Database=PayrollDB;User=payroll_app;Password=PayrollApp@2026;" `
+  -e ConnectionStrings__DefaultConnection="Server=tcp:<sql-server-name>.database.windows.net,1433;Initial Catalog=PayrollDB;User ID=<sql-admin-user>;Password=<sql-admin-password>;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" `
   --name payroll-app `
   payroll-app:latest
 ```
 
-Access the application at: **http://localhost:8080**
+Open `http://localhost:8080`.
 
-### Docker Compose (Optional)
+## Azure Deployment Assets
 
-Create `docker-compose.yml`:
+Available Azure deployment assets are:
 
-```yaml
-version: '3.8'
+- `infra/terraform/`: provisions or references Azure resources such as resource group, Azure Container Registry, Azure SQL Database, and AKS integration.
+- `k8s/`: Kubernetes namespace, service, deployment, and example secret manifests.
+- `.github/workflows/infra.yml`: GitHub Actions workflow for Terraform infrastructure validation, planning, and apply.
+- `.github/workflows/app-cicd.yml`: GitHub Actions workflow for app build, image push, and AKS deployment.
 
-services:
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: PayrollDB
-      MYSQL_USER: payroll_app
-      MYSQL_PASSWORD: PayrollApp@2026
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
+### GitHub Actions Pipelines
 
-  app:
-    build: .
-    ports:
-      - "8080:80"
-    environment:
-      ConnectionStrings__DefaultConnection: "Server=mysql;Port=3306;Database=PayrollDB;User=payroll_app;Password=PayrollApp@2026;"
-    depends_on:
-      - mysql
+This repository uses two separate GitHub Actions pipelines:
 
-volumes:
-  mysql_data:
+1. `Infrastructure`
+2. `App code build pipeline`
+
+The old combined deployment workflow and Azure DevOps pipeline are not used.
+
+### Infrastructure Pipeline
+
+Workflow file: `.github/workflows/infra.yml`
+
+Purpose: create or update Azure infrastructure using Terraform. This pipeline is responsible for resource group, ACR, Azure SQL Database, AKS integration, and ACR pull permissions.
+
+Triggers:
+
+- Pull request to `dev` when Terraform or the infra workflow changes.
+- Push to `dev` when Terraform or the infra workflow changes.
+- Manual `workflow_dispatch` with `target_environment` and `apply` inputs.
+
+Stage flow:
+
+```text
+Validate Terraform
+  -> dev Infrastructure
+    -> qa Infrastructure
+      -> uat Infrastructure
+        -> prod Infrastructure
 ```
 
-Run with:
-```powershell
-docker-compose up -d
+Stage details:
+
+- `Validate Terraform`: runs `terraform fmt`, `terraform init -backend=false`, and `terraform validate`.
+- `dev Infrastructure`: initializes backend, plans, applies, and publishes outputs for `dev`.
+- `qa Infrastructure`: initializes backend, plans, applies, and publishes outputs for `qa`.
+- `uat Infrastructure`: initializes backend, plans, applies, and publishes outputs for `uat`.
+- `prod Infrastructure`: initializes backend, plans, applies, and publishes outputs for `prod`.
+
+For pull requests, only `Validate Terraform` runs. For manual runs, `target_environment` controls the environment path and `apply` controls whether Terraform changes are applied.
+
+### App Code Build Pipeline
+
+Workflow file: `.github/workflows/app-cicd.yml`
+
+Purpose: build the app, create the Docker image, push the image to ACR, deploy to AKS, and confirm that the running app can connect to the database.
+
+Triggers:
+
+- Pull request to `dev` when application, Docker, Kubernetes, or app workflow files change.
+- Push to `dev` when application, Docker, Kubernetes, or app workflow files change.
+- Manual `workflow_dispatch` with `target_environment` set to `dev`, `qa`, `uat`, or `prod`.
+
+Stage flow:
+
+```text
+Resolve target environment
+  -> Build app code (create the Docker image)
+    -> Push the Docker image to ACR
+      -> Deploy the image to AKS
+        -> AKS connectivity with DB
 ```
 
-## 🔄 CI/CD Pipeline
+Stage details:
 
-The project includes an Azure DevOps pipeline ([azure-pipelines.yml](azure-pipelines.yml)) with three stages:
+- `Resolve target environment`: selects the deployment environment. Pushes to `dev` default to `dev`; manual runs use the selected environment.
+- `Build app code (create the Docker image)`: restores dependencies, builds the .NET app, runs tests if test projects exist, builds the Docker image, and stores it as a short-lived artifact.
+- `Push the Docker image to ACR`: loads the image artifact, resolves the target ACR and repository from GitHub environment variables, tags the image with the commit SHA and `latest`, and pushes both tags to ACR.
+- `Deploy the image to AKS`: gets AKS credentials, creates or updates the `payroll-db` Kubernetes Secret for Azure SQL, applies the namespace/service/deployment manifests, and waits for rollout.
+- `AKS connectivity with DB`: checks the deployment rollout and waits for pods to become Ready. The app readiness probe uses the database health check, so this verifies AKS-to-database connectivity.
 
-### 1. Build Stage
-- Restores NuGet packages
-- Compiles the application
-- Publishes artifacts
+For pull requests, the app pipeline validates the build and Docker image creation but does not push to ACR or deploy to AKS.
 
-### 2. Database Migration Stage
-- Installs EF Core tools
-- Applies database migrations to production
+### Required GitHub Environments
 
-### 3. Deploy Stage
-- Deploys to Azure App Service
+Create these GitHub environments and configure environment protection rules as needed:
 
-**To use the pipeline:**
-1. Create an Azure DevOps project
-2. Set up a service connection to Azure
-3. Configure pipeline variables:
-   - `AzureSqlConnectionString`: Production database connection string
-4. Push code to trigger the pipeline
+- `dev`
+- `qa`
+- `uat`
+- `prod`
 
-## 🧮 Business Logic
+Recommended protection: require manual approval for `uat` and `prod` before infrastructure changes or app deployments continue.
 
-### Payroll Calculation Service
+### Required GitHub Variables and Secrets
 
-The [PayrollCalculationService](Services/PayrollCalculationService.cs) handles all payroll calculations:
+Configure these values per GitHub environment. Use confirmed Azure resource names and do not commit secrets to the repository.
 
-#### Methods:
+Infrastructure workflow variables and secrets:
 
-**`CalculateGrossPay(Employee, hoursWorked?)`**
-- Salaried: `AnnualSalary ÷ 12`
-- Hourly: `HourlyRate × hoursWorked` (default: 160 hours)
+```text
+AZURE_CLIENT_ID                 secret
+AZURE_TENANT_ID                 secret
+AZURE_SUBSCRIPTION_ID           secret
+TF_STATE_RESOURCE_GROUP         variable
+TF_STATE_STORAGE_ACCOUNT        variable
+TF_STATE_CONTAINER              variable
+TF_STATE_KEY                    variable
+AZURE_LOCATION                  variable
+RESOURCE_GROUP_NAME             variable
+CREATE_RESOURCE_GROUP           variable
+ACR_NAME                        variable
+ACR_RESOURCE_GROUP_NAME         variable
+CREATE_ACR                      variable
+CREATE_SQL                      variable
+SQL_SERVER_NAME                 variable
+SQL_LOCATION                    variable
+SQL_ADMIN_USERNAME              variable
+SQL_ADMIN_PASSWORD              secret
+CONFIGURE_AKS                   variable
+AKS_CLUSTER_NAME                variable
+AKS_RESOURCE_GROUP              variable
+GRANT_AKS_ACR_PULL              variable
+```
 
-**`CalculateTax(grossPay)`**
-- Returns: `grossPay × 0.15` (15% tax rate)
+App workflow variables and secrets:
 
-**`CalculateSocialSecurity(grossPay)`**
-- Returns: `grossPay × 0.062` (6.2% rate)
+```text
+AZURE_CLIENT_ID                 secret
+AZURE_TENANT_ID                 secret
+AZURE_SUBSCRIPTION_ID           secret
+ACR_NAME                        variable
+IMAGE_REPOSITORY                variable
+CONFIGURE_AKS                   variable
+AKS_CLUSTER_NAME                variable
+AKS_RESOURCE_GROUP              variable
+K8S_NAMESPACE                   variable
+SQL_SERVER_NAME                 variable
+SQL_ADMIN_USERNAME              variable
+SQL_ADMIN_PASSWORD              secret
+```
 
-**`GetHealthInsuranceDeduction()`**
-- Returns: `$200.00` (fixed monthly amount)
+Typical app image repository values are environment-specific, for example `payroll-dev`, `payroll-qa`, `payroll-uat`, and `payroll-prd`.
 
-**`CalculateTotalDeductions(tax, socialSecurity, healthInsurance)`**
-- Returns: Sum of all deductions
-
-**`CalculateNetPay(grossPay, totalDeductions)`**
-- Returns: `grossPay - totalDeductions`
-
-**`ProcessPayroll(Employee, payPeriodStart, payPeriodEnd, hoursWorked?)`**
-- Complete end-to-end payroll processing
-- Returns: `PayrollRecord` object with all calculated values
-
-### Validation Rules
-
-**Employee:**
-- Employee ID: Required, unique, max 50 characters
-- Name: Required, max 100 characters
-- Email: Required, valid email format, max 100 characters
-- Department: Optional, max 100 characters
-- Annual Salary: Must be ≥ 0 (for salaried employees)
-- Hourly Rate: Must be ≥ 0 (for hourly employees)
-- Hire Date: Required, valid date
-
-**Payroll Record:**
-- Hours Worked: 0 to 744 (31 days × 24 hours)
-- All monetary values: 2 decimal places
-
-## 🛠️ Development
-
-### Common Commands
+For Kubernetes deployments, create the database connection string as a Kubernetes Secret rather than committing it:
 
 ```powershell
-# Run the application
-dotnet run
+kubectl create secret generic payroll-db `
+  --namespace <namespace> `
+  --from-literal=connection-string="Server=tcp:<sql-server-name>.database.windows.net,1433;Initial Catalog=PayrollDB;User ID=<sql-admin-user>;Password=<sql-admin-password>;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" `
+  --dry-run=client -o yaml | kubectl apply -f -
+```
 
-# Run with hot reload (watches for file changes)
-dotnet watch run
+## Common Commands
 
-# Build the project
-dotnet build
-
-# Clean build artifacts
-dotnet clean
-
-# Restore NuGet packages
+```powershell
 dotnet restore
-
-# Run with custom URL
-dotnet run --urls "http://localhost:5050"
-
-# Publish for production
+dotnet build
+dotnet run
+dotnet watch run
+dotnet clean
 dotnet publish -c Release -o ./publish
 ```
 
-### Development Environment Setup
+Run on custom ports:
 
-**Visual Studio 2022:**
-1. Open `PayrollApp.csproj`
-2. Press F5 to run with debugging
-
-**VS Code:**
-1. Install C# Dev Kit extension
-2. Open folder in VS Code
-3. Press F5 to run with debugging
-
-### Adding New Features
-
-**1. Add a new model:**
-- Create class in `Models/` folder
-- Add DbSet to `ApplicationDbContext.cs`
-- Create migration: `dotnet ef migrations add AddModelName`
-- Update database: `dotnet ef database update`
-
-**2. Add a new Razor Page:**
 ```powershell
-dotnet new page --name PageName --namespace PayrollApp.Pages --output Pages/
-```
-
-**3. Add a new service:**
-- Create class in `Services/` folder
-- Register in `Program.cs`: `builder.Services.AddScoped<ServiceName>();`
-
-## 🔧 Troubleshooting
-
-### Issue: "Unable to connect to MySQL server"
-**Solution:**
-- Verify MySQL is running: `mysql -u root -p`
-- Check connection string in `appsettings.json`
-- Ensure firewall allows port 3306
-- Verify user has correct permissions
-
-### Issue: "Database 'PayrollDB' does not exist"
-**Solution:**
-- The app creates the database automatically on first run
-- Ensure the MySQL user has CREATE DATABASE privilege:
-```sql
-GRANT CREATE ON *.* TO 'payroll_app'@'localhost';
-```
-
-### Issue: ".NET SDK not found"
-**Solution:**
-- Download and install from: https://dotnet.microsoft.com/download/dotnet/8.0
-- Open a NEW terminal window after installation
-- Verify: `dotnet --version`
-
-### Issue: "Port 5001 already in use"
-**Solution:**
-```powershell
-# Run on different port
 dotnet run --urls "http://localhost:5050;https://localhost:5051"
 ```
 
-### Issue: "Entity Framework tools not found"
-**Solution:**
+## Troubleshooting
+
+### .NET SDK not found
+
+Install the .NET 8 SDK, open a new terminal, and verify:
+
+```powershell
+dotnet --version
+```
+
+### Cannot connect to Azure SQL Database
+
+- Confirm the connection string is set in the correct environment.
+- Confirm the SQL server firewall allows the client or Azure service path.
+- Confirm the SQL admin/user credentials are valid.
+- Confirm `Encrypt=True` is present for Azure SQL connections.
+
+### Database schema is missing
+
+The app creates the schema with `EnsureCreated()` when it starts. Confirm the configured SQL user has permission to create tables in the target database.
+
+### Entity Framework tools not found
+
 ```powershell
 dotnet tool install --global dotnet-ef --version 8.0.0
 ```
 
-### Issue: Sample data not appearing
-**Solution:**
-- Delete the database and restart the app
-- Or run the seeder manually:
-```csharp
-using (var scope = app.Services.CreateScope())
-{
-    var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-    DbInitializer.Initialize(context);
-}
-```
+## Additional Resources
 
-## 📚 Additional Resources
-
-- **[SETUP.md](SETUP.md)**: Detailed installation guide for beginners
-- **[QUICKSTART.md](QUICKSTART.md)**: Quick reference for common tasks
-- [ASP.NET Core Documentation](https://docs.microsoft.com/aspnet/core)
-- [Entity Framework Core Documentation](https://docs.microsoft.com/ef/core)
-- [MySQL Documentation](https://dev.mysql.com/doc/)
-- [Pomelo EF Core Provider](https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql)
-
-## 📄 License
-
-This project is provided as-is for educational and demonstration purposes.
-
-## 👥 Contributing
-
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
-
----
-
-**Built with ❤️ using ASP.NET Core 8.0**
-
-1. Navigate to **Process Payroll** from the menu
-2. Select an employee from the dropdown
-3. Set the pay period dates
-4. For hourly employees, enter hours worked
-5. Click **Calculate & Process Payroll**
-6. Review the payroll summary showing gross pay, deductions, and net pay
-
-### Viewing Payment History
-
-1. Navigate to **Payment History** from the menu
-2. Use filters to view specific records:
-   - Filter by employee
-   - Filter by date range
-3. View summary totals at the bottom of the table
-
-## Sample Data
-
-The application includes 7 sample employees:
-- 4 Salaried employees
-- 3 Hourly employees
-
-You can delete or modify these as needed.
-
-## Database
-
-The application uses SQLite with a file-based database (`payroll.db`). The database is created automatically in the project root folder.
-
-To view/edit the database, you can use:
-- [DB Browser for SQLite](https://sqlitebrowser.org/)
-- [SQLite Browser VS Code Extension](https://marketplace.visualstudio.com/items?itemName=alexcvzz.vscode-sqlite)
-
-## Technologies Used
-
-- **ASP.NET Core 8.0** - Web framework
-- **Razor Pages** - UI framework
-- **Entity Framework Core 8.0** - ORM
-- **SQLite** - Database
-- **Bootstrap 5** - CSS framework
-
-## Troubleshooting
-
-### Database Issues
-
-If you encounter database errors, try deleting `payroll.db` and running the application again to recreate it.
-
-### Port Conflicts
-
-If ports 5000/5001 are in use, you can specify a different port:
-
-```powershell
-dotnet run --urls "http://localhost:5050;https://localhost:5051"
-```
-
-## Future Enhancements
-
-- User authentication and authorization
-- Multiple pay frequencies (weekly, bi-weekly, monthly)
-- Time tracking for hourly employees
-- Advanced tax calculations
-- Export to PDF/Excel
-- Email notifications
-- Employee self-service portal
+- `SETUP.md`: Detailed setup guide
+- `QUICKSTART.md`: Quick command reference
+- ASP.NET Core documentation: https://docs.microsoft.com/aspnet/core
+- Entity Framework Core documentation: https://docs.microsoft.com/ef/core
+- Azure SQL Database documentation: https://learn.microsoft.com/azure/azure-sql/database/
 
 ## License
 
-This is a sample application for educational purposes.
+This project is provided as-is for educational and demonstration purposes.

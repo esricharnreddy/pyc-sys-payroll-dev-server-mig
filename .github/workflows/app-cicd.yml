@@ -1,0 +1,361 @@
+name: App code build pipeline
+
+on:
+  push:
+    branches: [ dev ]
+    paths:
+      - 'Program.cs'
+      - 'PayrollApp.csproj'
+      - 'appsettings.json'
+      - 'global.json'
+      - 'Data/**'
+      - 'Models/**'
+      - 'Pages/**'
+      - 'Properties/**'
+      - 'Services/**'
+      - 'wwwroot/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'k8s/**'
+      - '.github/workflows/app-cicd.yml'
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'Program.cs'
+      - 'PayrollApp.csproj'
+      - 'appsettings.json'
+      - 'global.json'
+      - 'Data/**'
+      - 'Models/**'
+      - 'Pages/**'
+      - 'Properties/**'
+      - 'Services/**'
+      - 'wwwroot/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'k8s/**'
+      - '.github/workflows/app-cicd.yml'
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment to deploy
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - qa
+          - uat
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: app-code-build-pipeline-${{ github.ref }}-${{ github.event.inputs.target_environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: 8.0.x
+  IMAGE_ARTIFACT_NAME: payroll-app-image
+  IMAGE_TAR: payroll-app-image.tar
+  LOCAL_IMAGE_TAG: payroll-app-build:${{ github.sha }}
+
+jobs:
+  resolve_environment:
+    name: Resolve target environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      target_environment: ${{ steps.resolve.outputs.target_environment }}
+
+    steps:
+      - name: Resolve target environment
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target_environment="${{ github.event.inputs.target_environment }}"
+          else
+            target_environment="dev"
+          fi
+
+          echo "target_environment=$target_environment" >> "$GITHUB_OUTPUT"
+          echo "Target environment: $target_environment" >> "$GITHUB_STEP_SUMMARY"
+
+  build_app_code_create_docker_image:
+    name: Build app code (create the Docker image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: resolve_environment
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore app code
+        run: dotnet restore PayrollApp.csproj
+
+      - name: Build app code
+        run: dotnet build PayrollApp.csproj --configuration Release --no-restore
+
+      - name: Test app code if test projects exist
+        shell: bash
+        run: |
+          mapfile -t test_projects < <(find . -name '*Test*.csproj' -o -name '*Tests*.csproj')
+          if [ "${#test_projects[@]}" -eq 0 ]; then
+            echo "No test projects found. Skipping dotnet test."
+            exit 0
+          fi
+
+          for project in "${test_projects[@]}"; do
+            dotnet test "$project" --configuration Release
+          done
+
+      - name: Create the Docker image
+        run: docker build -t "${LOCAL_IMAGE_TAG}" .
+
+      - name: Save Docker image artifact
+        run: docker save "${LOCAL_IMAGE_TAG}" -o "${IMAGE_TAR}"
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IMAGE_ARTIFACT_NAME }}
+          path: ${{ env.IMAGE_TAR }}
+          retention-days: 1
+
+      - name: Publish build summary
+        run: |
+          {
+            echo "### Build app code (create the Docker image)"
+            echo ""
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Local image: ${LOCAL_IMAGE_TAG}"
+            echo "- Artifact: ${IMAGE_ARTIFACT_NAME}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  push_the_docker_image_to_acr:
+    name: Push the Docker image to ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - resolve_environment
+      - build_app_code_create_docker_image
+    if: github.event_name != 'pull_request'
+    environment: ${{ needs.resolve_environment.outputs.target_environment }}
+    concurrency: app-push-acr-${{ needs.resolve_environment.outputs.target_environment }}
+    outputs:
+      image_uri_sha: ${{ steps.image.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.image.outputs.image_uri_latest }}
+      k8s_namespace: ${{ steps.image.outputs.k8s_namespace }}
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.IMAGE_ARTIFACT_NAME }}
+
+      - name: Load Docker image
+        run: docker load -i "${IMAGE_TAR}"
+
+      - name: Resolve ACR image values
+        id: image
+        shell: bash
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+          TARGET_ENVIRONMENT: ${{ needs.resolve_environment.outputs.target_environment }}
+        run: |
+          if [ -z "$ACR_NAME" ]; then
+            echo "::error::ACR_NAME must be configured for ${TARGET_ENVIRONMENT}."
+            exit 1
+          fi
+
+          if [ -z "$IMAGE_REPOSITORY" ]; then
+            echo "::error::IMAGE_REPOSITORY must be configured for ${TARGET_ENVIRONMENT}."
+            exit 1
+          fi
+
+          if [ -z "$K8S_NAMESPACE" ]; then
+            K8S_NAMESPACE="payroll-${TARGET_ENVIRONMENT}"
+          fi
+
+          acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+
+          echo "image_uri_sha=$acr_login_server/$IMAGE_REPOSITORY:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$acr_login_server/$IMAGE_REPOSITORY:latest" >> "$GITHUB_OUTPUT"
+          echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
+
+      - name: ACR Login
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Push the Docker image to ACR
+        env:
+          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
+          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
+        run: |
+          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_SHA"
+          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_LATEST"
+          docker push "$IMAGE_URI_SHA"
+          docker push "$IMAGE_URI_LATEST"
+
+      - name: Publish image summary
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
+          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
+          TARGET_ENVIRONMENT: ${{ needs.resolve_environment.outputs.target_environment }}
+        run: |
+          {
+            echo "### Push the Docker image to ACR"
+            echo ""
+            echo "- Environment: ${TARGET_ENVIRONMENT}"
+            echo "- ACR: ${ACR_NAME}"
+            echo "- Repository: ${IMAGE_REPOSITORY}"
+            echo "- SHA tag: ${IMAGE_URI_SHA}"
+            echo "- Latest tag: ${IMAGE_URI_LATEST}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy_the_image_to_aks:
+    name: Deploy the image to AKS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - resolve_environment
+      - push_the_docker_image_to_acr
+    if: github.event_name != 'pull_request'
+    environment: ${{ needs.resolve_environment.outputs.target_environment }}
+    concurrency: app-deploy-aks-${{ needs.resolve_environment.outputs.target_environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Skip AKS deployment when disabled
+        if: vars.CONFIGURE_AKS != 'true'
+        run: echo "CONFIGURE_AKS is not true. Skipping Deploy the image to AKS." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Get AKS credentials
+        if: vars.CONFIGURE_AKS == 'true'
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+
+      - name: Setup Kubectl
+        if: vars.CONFIGURE_AKS == 'true'
+        uses: azure/setup-kubectl@v4
+
+      - name: Install manifest tools
+        if: vars.CONFIGURE_AKS == 'true'
+        run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+      - name: Deploy the image to AKS
+        if: vars.CONFIGURE_AKS == 'true'
+        env:
+          IMAGE: ${{ needs.push_the_docker_image_to_acr.outputs.image_uri_sha }}
+          K8S_NAMESPACE: ${{ needs.push_the_docker_image_to_acr.outputs.k8s_namespace }}
+          SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
+          SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
+          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          sql_fqdn=""
+          if [ -n "$SQL_SERVER_NAME" ]; then
+            sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
+          fi
+
+          if [ -z "$sql_fqdn" ]; then
+            echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
+            exit 1
+          fi
+
+          if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
+            echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
+            exit 1
+          fi
+
+          envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+          kubectl create secret generic payroll-db -n "$K8S_NAMESPACE" \
+            --from-literal=connection-string="Server=tcp:${sql_fqdn},1433;Initial Catalog=PayrollDB;User ID=${SQL_ADMIN_USERNAME};Password=${SQL_ADMIN_PASSWORD};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+          envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          {
+            echo "### Deploy the image to AKS"
+            echo ""
+            echo "- Namespace: ${K8S_NAMESPACE}"
+            echo "- Image: ${IMAGE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  aks_connectivity_with_db:
+    name: AKS connectivity with DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - resolve_environment
+      - push_the_docker_image_to_acr
+      - deploy_the_image_to_aks
+    if: always() && github.event_name != 'pull_request' && needs.push_the_docker_image_to_acr.result == 'success' && needs.deploy_the_image_to_aks.result == 'success'
+    environment: ${{ needs.resolve_environment.outputs.target_environment }}
+    concurrency: app-db-check-${{ needs.resolve_environment.outputs.target_environment }}
+
+    steps:
+      - name: Skip AKS connectivity with DB when disabled
+        if: vars.CONFIGURE_AKS != 'true'
+        run: echo "CONFIGURE_AKS is not true. Skipping AKS connectivity with DB." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Azure Login
+        if: vars.CONFIGURE_AKS == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        if: vars.CONFIGURE_AKS == 'true'
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+
+      - name: AKS connectivity with DB
+        if: vars.CONFIGURE_AKS == 'true'
+        env:
+          K8S_NAMESPACE: ${{ needs.push_the_docker_image_to_acr.outputs.k8s_namespace }}
+          TARGET_ENVIRONMENT: ${{ needs.resolve_environment.outputs.target_environment }}
+        run: |
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          {
+            echo "### AKS connectivity with DB - ${TARGET_ENVIRONMENT}"
+            echo ""
+            echo "- Namespace: ${K8S_NAMESPACE}"
+            echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
+          } >> "$GITHUB_STEP_SUMMARY"
