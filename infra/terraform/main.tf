@@ -93,4 +93,19 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
   role_definition_name             = "AcrPull"
   principal_id                     = data.azurerm_kubernetes_cluster.this[0].kubelet_identity[0].object_id
   skip_service_principal_aad_check = true
+
+  # The AcrPull assignment frequently already exists in Azure and is imported
+  # into state before apply. Several attributes are write-only or computed by
+  # Azure (skip_service_principal_aad_check is never returned by the API), which
+  # produces a post-import diff. azurerm_role_assignment does not support
+  # in-place updates, so ignore these attributes to avoid a failing modify.
+  lifecycle {
+    ignore_changes = [
+      skip_service_principal_aad_check,
+      principal_type,
+      description,
+      condition,
+      condition_version,
+    ]
+  }
 }
