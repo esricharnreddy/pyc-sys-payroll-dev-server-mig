@@ -238,18 +238,20 @@ Purpose: create or update Azure infrastructure using Terraform. This pipeline is
 
 Triggers:
 
-- Pull request to `dev` when Terraform or the infra workflow changes.
-- Push to `dev` when Terraform or the infra workflow changes.
-- Manual `workflow_dispatch` with `target_environment` and `apply` inputs.
+- Push to `dev` when Terraform or the infra workflow changes (runs the full sequential chain).
+- Pull request to `dev` when Terraform or the infra workflow changes (runs `Validate Terraform` only).
+- Manual `workflow_dispatch` with an `apply` input.
+
+This pipeline is intended to run first. When it completes successfully on `dev`, it automatically starts the App Code Build Pipeline (see that section).
 
 Stage flow:
 
 ```text
 Validate Terraform
   -> dev Infrastructure
-  -> qa Infrastructure
-    -> uat Infrastructure
-      -> prod Infrastructure
+    -> qa Infrastructure
+      -> uat Infrastructure
+        -> prod Infrastructure
 ```
 
 Stage details:
@@ -262,7 +264,9 @@ Stage details:
 
 When `CONFIGURE_AKS=true` and `GRANT_AKS_ACR_PULL=true`, each environment job checks whether the AKS kubelet identity already has `AcrPull` on the target ACR. If the role assignment exists but is not yet in Terraform state, the workflow imports it before `terraform plan`. This prevents `RoleAssignmentExists` failures when the permission was previously granted outside the current Terraform state.
 
-For pull requests, only `Validate Terraform` runs. For manual runs, `target_environment` controls the environment path and `apply` controls whether Terraform changes are applied. Selecting `qa` runs the QA infrastructure job after validation. Selecting `prod` runs `qa -> uat -> prod`; production will not start unless QA and UAT succeed.
+The chain is strictly sequential so shared infrastructure is created in order. `dev` creates the shared ACR (`CREATE_ACR=true`); `qa` and `uat` reuse the dev ACR (`CREATE_ACR=false`, with `ACR_NAME`/`ACR_RESOURCE_GROUP_NAME` pointing at the dev ACR); `prod` creates its own ACR (`CREATE_ACR=true`). Because `dev` runs first, the shared ACR exists before `qa`/`uat` plan.
+
+For pull requests, only `Validate Terraform` runs. On a manual run the pipeline walks the full chain `dev -> qa -> uat -> prod`, and each environment job starts only after the previous environment job succeeds. The `apply` input controls whether Terraform changes are applied. Production will not start unless `dev`, `qa`, and `uat` all succeed.
 
 ### App Code Build Pipeline
 
@@ -272,27 +276,29 @@ Purpose: build the app, create the Docker image, push the image to ACR, deploy t
 
 Triggers:
 
-- Pull request to `dev` when application, Docker, Kubernetes, or app workflow files change.
-- Push to `dev` when application, Docker, Kubernetes, or app workflow files change.
-- Manual `workflow_dispatch` with `target_environment` set to `dev`, `qa`, `uat`, or `prod`.
+- Automatically after the `Infrastructure` workflow completes successfully on `dev` (`workflow_run`). This is the normal infra-then-app handoff.
+- Push to `dev` when application, Docker, Kubernetes, or app workflow files change. This lets app-only changes deploy without re-running the infra pipeline.
+- Pull request to `dev` when application, Docker, Kubernetes, or app workflow files change (build validation only).
+- Manual `workflow_dispatch` (no inputs).
+
+The `workflow_run` handoff only fires when this workflow file exists on the repository's **default branch**. If your default branch is not `dev`, set the default branch to `dev` (or keep the workflows on the default branch) so the chaining activates. For `workflow_run` runs the pipeline checks out and tags the image with the commit that triggered the infra run (`workflow_run.head_sha`), not the default-branch HEAD.
 
 Stage flow:
 
 ```text
-Resolve target environment
-  -> Build app code (create the Docker image)
-    -> Push the Docker image to ACR
-      -> Deploy the image to AKS
-        -> AKS connectivity with DB
+Build app code (create the Docker image)
+  -> Deploy to dev
+    -> Deploy to qa
+      -> Deploy to uat
+        -> Deploy to prod
 ```
 
 Stage details:
 
-- `Resolve target environment`: selects the deployment environment. Pushes to `dev` default to `dev`; manual runs use the selected environment.
-- `Build app code (create the Docker image)`: restores dependencies, builds the .NET app, runs tests if test projects exist, builds the Docker image, and stores it as a short-lived artifact.
-- `Push the Docker image to ACR`: loads the image artifact, resolves the target ACR and repository from GitHub environment variables, tags the image with the commit SHA and `latest`, and pushes both tags to ACR.
-- `Deploy the image to AKS`: gets AKS credentials, creates or updates the `payroll-db` Kubernetes Secret for Azure SQL, applies the namespace/service/deployment manifests, and waits for rollout.
-- `AKS connectivity with DB`: checks the deployment rollout and waits for pods to become Ready. The app readiness probe uses the database health check, so this verifies AKS-to-database connectivity.
+- `Build app code (create the Docker image)`: restores dependencies, builds the .NET app, runs tests if test projects exist, builds the Docker image once, and stores it as a short-lived artifact shared by every environment.
+- `Deploy to dev/qa/uat/prod`: each environment job downloads the shared image artifact, resolves the target ACR and repository from that environment's GitHub variables, tags the image with the commit SHA and `latest`, pushes both tags, gets AKS credentials, creates or updates the `payroll-db` Kubernetes Secret for Azure SQL, applies the namespace/service/deployment manifests into the environment namespace, waits for rollout, and confirms pods become Ready (which verifies AKS-to-database connectivity through the readiness probe).
+
+The application is deployed to all four environments one after another. Each environment job starts only after the previous environment job succeeds, so the order is always `dev -> qa -> uat -> prod`.
 
 For pull requests, the app pipeline validates the build and Docker image creation but does not push to ACR or deploy to AKS.
 

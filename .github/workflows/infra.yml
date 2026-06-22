@@ -13,17 +13,6 @@ on:
       - '.github/workflows/infra.yml'
   workflow_dispatch:
     inputs:
-      target_environment:
-        description: Environment to run
-        type: choice
-        required: true
-        default: all
-        options:
-          - all
-          - dev
-          - qa
-          - uat
-          - prod
       apply:
         description: Apply Terraform changes
         type: boolean
@@ -75,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: validate
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'dev')
+    if: github.event_name != 'pull_request'
     environment: dev
     concurrency: infrastructure-dev
 
@@ -231,8 +220,8 @@ jobs:
     name: qa Infrastructure
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: validate
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
+    needs: infra_dev
+    if: github.event_name != 'pull_request' && needs.infra_dev.result == 'success'
     environment: qa
     concurrency: infrastructure-qa
 
@@ -389,7 +378,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: infra_qa
-    if: always() && github.event_name != 'pull_request' && needs.infra_qa.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
+    if: github.event_name != 'pull_request' && needs.infra_qa.result == 'success'
     environment: uat
     concurrency: infrastructure-uat
 
@@ -546,7 +535,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: infra_uat
-    if: always() && github.event_name != 'pull_request' && needs.infra_uat.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'prod')
+    if: github.event_name != 'pull_request' && needs.infra_uat.result == 'success'
     environment: prod
     concurrency: infrastructure-prod
 
