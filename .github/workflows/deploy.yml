@@ -109,7 +109,8 @@ jobs:
           -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP }}" \
           -var="acr_name=${{ vars.ACR_NAME }}" \
           -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
-          -var="create_acr=${{ vars.CREATE_ACR }}"
+          -var="create_acr=${{ vars.CREATE_ACR }}" \
+          -var='tags={"environment":"UAT","Application":"dbmigration","Costcenter":"it"}'
 
     - name: Terraform Apply
       working-directory: infra/terraform
@@ -261,7 +262,8 @@ jobs:
           -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP }}" \
           -var="acr_name=${{ vars.ACR_NAME }}" \
           -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
-          -var="create_acr=${{ vars.CREATE_ACR }}"
+          -var="create_acr=${{ vars.CREATE_ACR }}" \
+          -var='tags={"environment":"UAT","Application":"dbmigration","Costcenter":"it"}'
 
     - name: Terraform Apply
       working-directory: infra/terraform
@@ -413,7 +415,8 @@ jobs:
           -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP }}" \
           -var="acr_name=${{ vars.ACR_NAME }}" \
           -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
-          -var="create_acr=${{ vars.CREATE_ACR }}"
+          -var="create_acr=${{ vars.CREATE_ACR }}" \
+          -var='tags={"environment":"UAT","Application":"dbmigration","Costcenter":"it"}'
 
     - name: Terraform Apply
       working-directory: infra/terraform
@@ -565,7 +568,8 @@ jobs:
           -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP }}" \
           -var="acr_name=${{ vars.ACR_NAME }}" \
           -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
-          -var="create_acr=${{ vars.CREATE_ACR }}"
+          -var="create_acr=${{ vars.CREATE_ACR }}" \
+          -var='tags={"environment":"UAT","Application":"dbmigration","Costcenter":"it"}'
 
     - name: Terraform Apply
       working-directory: infra/terraform
