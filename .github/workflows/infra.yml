@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: validate
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'dev' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'dev')
     environment: dev
     concurrency: infrastructure-dev
 
@@ -115,6 +115,24 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Terraform Init
         run: |
@@ -207,8 +225,8 @@ jobs:
     name: qa Infrastructure
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: infra_dev
-    if: always() && github.event_name != 'pull_request' && needs.infra_dev.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
+    needs: validate
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
     environment: qa
     concurrency: infrastructure-qa
 
@@ -248,6 +266,24 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Terraform Init
         run: |
@@ -382,6 +418,24 @@ jobs:
         with:
           terraform_version: 1.9.8
 
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Terraform Init
         run: |
           terraform init \
@@ -514,6 +568,24 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Terraform Init
         run: |
