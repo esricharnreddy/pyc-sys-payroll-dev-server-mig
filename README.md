@@ -262,7 +262,7 @@ Stage details:
 
 When `CONFIGURE_AKS=true` and `GRANT_AKS_ACR_PULL=true`, each environment job checks whether the AKS kubelet identity already has `AcrPull` on the target ACR. If the role assignment exists but is not yet in Terraform state, the workflow imports it before `terraform plan`. This prevents `RoleAssignmentExists` failures when the permission was previously granted outside the current Terraform state.
 
-For pull requests, only `Validate Terraform` runs. For manual runs, `target_environment` controls the environment path and `apply` controls whether Terraform changes are applied.
+For pull requests, only `Validate Terraform` runs. For manual runs, `target_environment` controls how far the environment path runs and `apply` controls whether Terraform changes are applied. For example, selecting `prod` runs `dev -> qa -> uat -> prod`; production will not start unless the earlier environment jobs succeed.
 
 ### App Code Build Pipeline
 

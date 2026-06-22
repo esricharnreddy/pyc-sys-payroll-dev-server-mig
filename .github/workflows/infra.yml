@@ -43,6 +43,10 @@ jobs:
     name: Validate Terraform
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      TF_VAR_location: eastus2
+      TF_VAR_resource_group_name: validation-rg
+      TF_VAR_acr_name: validationacr01
     defaults:
       run:
         shell: bash
@@ -71,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: validate
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'dev')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'dev' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
     environment: dev
     concurrency: infrastructure-dev
 
@@ -204,7 +208,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: infra_dev
-    if: always() && github.event_name != 'pull_request' && needs.infra_dev.result != 'failure' && needs.infra_dev.result != 'cancelled' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'qa')
+    if: always() && github.event_name != 'pull_request' && needs.infra_dev.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'qa' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
     environment: qa
     concurrency: infrastructure-qa
 
@@ -337,7 +341,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: infra_qa
-    if: always() && github.event_name != 'pull_request' && needs.infra_qa.result != 'failure' && needs.infra_qa.result != 'cancelled' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'uat')
+    if: always() && github.event_name != 'pull_request' && needs.infra_qa.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'uat' || github.event.inputs.target_environment == 'prod')
     environment: uat
     concurrency: infrastructure-uat
 
@@ -470,7 +474,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: infra_uat
-    if: always() && github.event_name != 'pull_request' && needs.infra_uat.result != 'failure' && needs.infra_uat.result != 'cancelled' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'prod')
+    if: always() && github.event_name != 'pull_request' && needs.infra_uat.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.target_environment == 'all' || github.event.inputs.target_environment == 'prod')
     environment: prod
     concurrency: infrastructure-prod
 
