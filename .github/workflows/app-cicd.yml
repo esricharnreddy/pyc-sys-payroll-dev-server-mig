@@ -228,7 +228,6 @@ jobs:
       always()
       && github.event_name != 'pull_request'
       && needs.publish_shared_acr.result == 'success'
-      && vars.CONFIGURE_AKS == 'true'
     environment: dev
     concurrency: app-release-dev
     env:
@@ -252,6 +251,7 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
+        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
@@ -290,6 +290,7 @@ jobs:
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
       - name: Verify AKS connectivity with DB
+        if: vars.CONFIGURE_AKS == 'true'
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
@@ -316,7 +317,6 @@ jobs:
       always()
       && github.event_name != 'pull_request'
       && needs.publish_shared_acr.result == 'success'
-      && vars.CONFIGURE_AKS == 'true'
       && needs.release_dev.result != 'failure'
       && needs.release_dev.result != 'cancelled'
     environment: qa
@@ -342,6 +342,7 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
+        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
@@ -380,6 +381,7 @@ jobs:
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
       - name: Verify AKS connectivity with DB
+        if: vars.CONFIGURE_AKS == 'true'
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
@@ -406,7 +408,6 @@ jobs:
       always()
       && github.event_name != 'pull_request'
       && needs.publish_shared_acr.result == 'success'
-      && vars.CONFIGURE_AKS == 'true'
       && needs.release_qa.result != 'failure'
       && needs.release_qa.result != 'cancelled'
     environment: uat
@@ -432,6 +433,7 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
+        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
@@ -470,6 +472,7 @@ jobs:
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
       - name: Verify AKS connectivity with DB
+        if: vars.CONFIGURE_AKS == 'true'
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
@@ -496,7 +499,6 @@ jobs:
       always()
       && github.event_name != 'pull_request'
       && needs.publish_prod_acr.result == 'success'
-      && vars.CONFIGURE_AKS == 'true'
       && needs.release_uat.result != 'failure'
       && needs.release_uat.result != 'cancelled'
     environment: prod
@@ -522,6 +524,7 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
+        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
@@ -560,6 +563,7 @@ jobs:
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
       - name: Verify AKS connectivity with DB
+        if: vars.CONFIGURE_AKS == 'true'
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
