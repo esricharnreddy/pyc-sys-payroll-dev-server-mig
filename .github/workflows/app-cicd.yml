@@ -249,7 +249,13 @@ jobs:
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          kubectl wait --for=condition=ready pod -l app=payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
           {
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
@@ -390,7 +396,13 @@ jobs:
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          kubectl wait --for=condition=ready pod -l app=payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
           {
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
@@ -531,7 +543,13 @@ jobs:
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          kubectl wait --for=condition=ready pod -l app=payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
           {
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
@@ -672,7 +690,13 @@ jobs:
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
         run: |
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          kubectl wait --for=condition=ready pod -l app=payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
           {
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
