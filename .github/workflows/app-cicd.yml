@@ -146,10 +146,7 @@ jobs:
         with:
           name: ${{ env.IMAGE_ARTIFACT_NAME }}
 
-      - name: Load Docker image
-        run: docker load -i "${IMAGE_TAR}"
-
-      - name: Resolve ACR image values
+      - name: Push the Docker image to ACR
         id: image
         shell: bash
         env:
@@ -157,79 +154,66 @@ jobs:
           IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
           K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
+          # Load the image built once in the "Build app code" stage and reused for every environment.
+          docker load -i "${IMAGE_TAR}"
+
           if [ -z "$ACR_NAME" ]; then
             echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$IMAGE_REPOSITORY" ]; then
             echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$K8S_NAMESPACE" ]; then
             K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
           fi
 
           acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
+          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
 
-          echo "image_uri_sha=$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_uri_latest=$acr_login_server/$IMAGE_REPOSITORY:latest" >> "$GITHUB_OUTPUT"
+          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
           echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
 
-      - name: ACR Login
-        env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-        run: az acr login --name "$ACR_NAME"
+          az acr login --name "$ACR_NAME"
 
-      - name: Push the Docker image to ACR
-        env:
-          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
-          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
-        run: |
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_SHA"
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_LATEST"
-          docker push "$IMAGE_URI_SHA"
-          docker push "$IMAGE_URI_LATEST"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
+          docker push "$image_uri_sha"
+          docker push "$image_uri_latest"
 
       - name: Skip AKS deployment when disabled
         if: vars.CONFIGURE_AKS != 'true'
         run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get AKS credentials
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-
       - name: Setup Kubectl
         if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
-      - name: Install manifest tools
-        if: vars.CONFIGURE_AKS == 'true'
-        run: sudo apt-get update && sudo apt-get install -y gettext-base
-
       - name: Deploy the image to AKS
         if: vars.CONFIGURE_AKS == 'true'
         env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
           IMAGE: ${{ steps.image.outputs.image_uri_sha }}
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
           sql_fqdn=""
           if [ -n "$SQL_SERVER_NAME" ]; then
             sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
           fi
-
           if [ -z "$sql_fqdn" ]; then
             echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
             exit 1
           fi
-
           if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
             echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
             exit 1
@@ -293,10 +277,7 @@ jobs:
         with:
           name: ${{ env.IMAGE_ARTIFACT_NAME }}
 
-      - name: Load Docker image
-        run: docker load -i "${IMAGE_TAR}"
-
-      - name: Resolve ACR image values
+      - name: Push the Docker image to ACR
         id: image
         shell: bash
         env:
@@ -304,79 +285,66 @@ jobs:
           IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
           K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
+          # Load the image built once in the "Build app code" stage and reused for every environment.
+          docker load -i "${IMAGE_TAR}"
+
           if [ -z "$ACR_NAME" ]; then
             echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$IMAGE_REPOSITORY" ]; then
             echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$K8S_NAMESPACE" ]; then
             K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
           fi
 
           acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
+          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
 
-          echo "image_uri_sha=$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_uri_latest=$acr_login_server/$IMAGE_REPOSITORY:latest" >> "$GITHUB_OUTPUT"
+          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
           echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
 
-      - name: ACR Login
-        env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-        run: az acr login --name "$ACR_NAME"
+          az acr login --name "$ACR_NAME"
 
-      - name: Push the Docker image to ACR
-        env:
-          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
-          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
-        run: |
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_SHA"
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_LATEST"
-          docker push "$IMAGE_URI_SHA"
-          docker push "$IMAGE_URI_LATEST"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
+          docker push "$image_uri_sha"
+          docker push "$image_uri_latest"
 
       - name: Skip AKS deployment when disabled
         if: vars.CONFIGURE_AKS != 'true'
         run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get AKS credentials
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-
       - name: Setup Kubectl
         if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
-      - name: Install manifest tools
-        if: vars.CONFIGURE_AKS == 'true'
-        run: sudo apt-get update && sudo apt-get install -y gettext-base
-
       - name: Deploy the image to AKS
         if: vars.CONFIGURE_AKS == 'true'
         env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
           IMAGE: ${{ steps.image.outputs.image_uri_sha }}
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
           sql_fqdn=""
           if [ -n "$SQL_SERVER_NAME" ]; then
             sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
           fi
-
           if [ -z "$sql_fqdn" ]; then
             echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
             exit 1
           fi
-
           if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
             echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
             exit 1
@@ -440,10 +408,7 @@ jobs:
         with:
           name: ${{ env.IMAGE_ARTIFACT_NAME }}
 
-      - name: Load Docker image
-        run: docker load -i "${IMAGE_TAR}"
-
-      - name: Resolve ACR image values
+      - name: Push the Docker image to ACR
         id: image
         shell: bash
         env:
@@ -451,79 +416,66 @@ jobs:
           IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
           K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
+          # Load the image built once in the "Build app code" stage and reused for every environment.
+          docker load -i "${IMAGE_TAR}"
+
           if [ -z "$ACR_NAME" ]; then
             echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$IMAGE_REPOSITORY" ]; then
             echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$K8S_NAMESPACE" ]; then
             K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
           fi
 
           acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
+          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
 
-          echo "image_uri_sha=$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_uri_latest=$acr_login_server/$IMAGE_REPOSITORY:latest" >> "$GITHUB_OUTPUT"
+          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
           echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
 
-      - name: ACR Login
-        env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-        run: az acr login --name "$ACR_NAME"
+          az acr login --name "$ACR_NAME"
 
-      - name: Push the Docker image to ACR
-        env:
-          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
-          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
-        run: |
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_SHA"
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_LATEST"
-          docker push "$IMAGE_URI_SHA"
-          docker push "$IMAGE_URI_LATEST"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
+          docker push "$image_uri_sha"
+          docker push "$image_uri_latest"
 
       - name: Skip AKS deployment when disabled
         if: vars.CONFIGURE_AKS != 'true'
         run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get AKS credentials
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-
       - name: Setup Kubectl
         if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
-      - name: Install manifest tools
-        if: vars.CONFIGURE_AKS == 'true'
-        run: sudo apt-get update && sudo apt-get install -y gettext-base
-
       - name: Deploy the image to AKS
         if: vars.CONFIGURE_AKS == 'true'
         env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
           IMAGE: ${{ steps.image.outputs.image_uri_sha }}
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
           sql_fqdn=""
           if [ -n "$SQL_SERVER_NAME" ]; then
             sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
           fi
-
           if [ -z "$sql_fqdn" ]; then
             echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
             exit 1
           fi
-
           if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
             echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
             exit 1
@@ -587,10 +539,7 @@ jobs:
         with:
           name: ${{ env.IMAGE_ARTIFACT_NAME }}
 
-      - name: Load Docker image
-        run: docker load -i "${IMAGE_TAR}"
-
-      - name: Resolve ACR image values
+      - name: Push the Docker image to ACR
         id: image
         shell: bash
         env:
@@ -598,79 +547,66 @@ jobs:
           IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
           K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
+          # Load the image built once in the "Build app code" stage and reused for every environment.
+          docker load -i "${IMAGE_TAR}"
+
           if [ -z "$ACR_NAME" ]; then
             echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$IMAGE_REPOSITORY" ]; then
             echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
             exit 1
           fi
-
           if [ -z "$K8S_NAMESPACE" ]; then
             K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
           fi
 
           acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
+          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
 
-          echo "image_uri_sha=$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_uri_latest=$acr_login_server/$IMAGE_REPOSITORY:latest" >> "$GITHUB_OUTPUT"
+          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
           echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
 
-      - name: ACR Login
-        env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-        run: az acr login --name "$ACR_NAME"
+          az acr login --name "$ACR_NAME"
 
-      - name: Push the Docker image to ACR
-        env:
-          IMAGE_URI_SHA: ${{ steps.image.outputs.image_uri_sha }}
-          IMAGE_URI_LATEST: ${{ steps.image.outputs.image_uri_latest }}
-        run: |
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_SHA"
-          docker tag "${LOCAL_IMAGE_TAG}" "$IMAGE_URI_LATEST"
-          docker push "$IMAGE_URI_SHA"
-          docker push "$IMAGE_URI_LATEST"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
+          docker push "$image_uri_sha"
+          docker push "$image_uri_latest"
 
       - name: Skip AKS deployment when disabled
         if: vars.CONFIGURE_AKS != 'true'
         run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get AKS credentials
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-        run: az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-
       - name: Setup Kubectl
         if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
-      - name: Install manifest tools
-        if: vars.CONFIGURE_AKS == 'true'
-        run: sudo apt-get update && sudo apt-get install -y gettext-base
-
       - name: Deploy the image to AKS
         if: vars.CONFIGURE_AKS == 'true'
         env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
           IMAGE: ${{ steps.image.outputs.image_uri_sha }}
           K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
           sql_fqdn=""
           if [ -n "$SQL_SERVER_NAME" ]; then
             sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
           fi
-
           if [ -z "$sql_fqdn" ]; then
             echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
             exit 1
           fi
-
           if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
             echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
             exit 1
