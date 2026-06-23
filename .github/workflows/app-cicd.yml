@@ -59,7 +59,7 @@ env:
 
 jobs:
   build_app_code_create_docker_image:
-    name: Build app code (create the Docker image)
+    name: Build app code
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
@@ -117,12 +117,78 @@ jobs:
             echo "- Artifact: ${IMAGE_ARTIFACT_NAME}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  deploy_dev:
-    name: Deploy to dev
+  push_acr_dev:
+    name: Push the Docker image to ACR
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     needs: build_app_code_create_docker_image
     if: github.event_name != 'pull_request'
+    environment: dev
+    concurrency: app-push-dev
+    env:
+      ENVIRONMENT_NAME: dev
+    outputs:
+      image_uri_sha: ${{ steps.image.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.image.outputs.image_uri_latest }}
+      k8s_namespace: ${{ steps.image.outputs.k8s_namespace }}
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.IMAGE_ARTIFACT_NAME }}
+
+      - name: Push the Docker image to ACR
+        id: image
+        shell: bash
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+        run: |
+          # Load the image built once in the "Build app code" stage and reused for every environment.
+          docker load -i "${IMAGE_TAR}"
+
+          if [ -z "$ACR_NAME" ]; then
+            echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
+            exit 1
+          fi
+          if [ -z "$IMAGE_REPOSITORY" ]; then
+            echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
+            exit 1
+          fi
+          if [ -z "$K8S_NAMESPACE" ]; then
+            K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
+          fi
+
+          acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
+          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
+
+          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
+          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
+          echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
+
+          az acr login --name "$ACR_NAME"
+
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
+          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
+          docker push "$image_uri_sha"
+          docker push "$image_uri_latest"
+
+  deploy_aks_dev:
+    name: Deploy the image to AKS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: push_acr_dev
+    if: github.event_name != 'pull_request' && needs.push_acr_dev.result == 'success' && vars.CONFIGURE_AKS == 'true'
     environment: dev
     concurrency: app-deploy-dev
     env:
@@ -141,6 +207,112 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Deploy the image to AKS
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          IMAGE: ${{ needs.push_acr_dev.outputs.image_uri_sha }}
+          K8S_NAMESPACE: ${{ needs.push_acr_dev.outputs.k8s_namespace }}
+          SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
+          SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
+          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
+          sql_fqdn=""
+          if [ -n "$SQL_SERVER_NAME" ]; then
+            sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
+          fi
+          if [ -z "$sql_fqdn" ]; then
+            echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
+            exit 1
+          fi
+          if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
+            echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
+            exit 1
+          fi
+
+          envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+          kubectl create secret generic payroll-db -n "$K8S_NAMESPACE" \
+            --from-literal=connection-string="Server=tcp:${sql_fqdn},1433;Initial Catalog=PayrollDB;User ID=${SQL_ADMIN_USERNAME};Password=${SQL_ADMIN_PASSWORD};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+          envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+
+  aks_db_dev:
+    name: AKS connectivity with DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [push_acr_dev, deploy_aks_dev]
+    if: github.event_name != 'pull_request' && needs.deploy_aks_dev.result == 'success' && vars.CONFIGURE_AKS == 'true'
+    environment: dev
+    concurrency: app-connectivity-dev
+    env:
+      ENVIRONMENT_NAME: dev
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: AKS connectivity with DB
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          K8S_NAMESPACE: ${{ needs.push_acr_dev.outputs.k8s_namespace }}
+          IMAGE_URI_SHA: ${{ needs.push_acr_dev.outputs.image_uri_sha }}
+        run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
+          {
+            echo "### Deploy to ${ENVIRONMENT_NAME}"
+            echo ""
+            echo "- Namespace: ${K8S_NAMESPACE}"
+            echo "- Image: ${IMAGE_URI_SHA}"
+            echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  push_acr_qa:
+    name: Push the Docker image to ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: aks_db_dev
+    if: github.event_name != 'pull_request' && needs.aks_db_dev.result == 'success'
+    environment: qa
+    concurrency: app-push-qa
+    env:
+      ENVIRONMENT_NAME: qa
+    outputs:
+      image_uri_sha: ${{ steps.image.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.image.outputs.image_uri_latest }}
+      k8s_namespace: ${{ steps.image.outputs.k8s_namespace }}
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
         with:
@@ -184,76 +356,12 @@ jobs:
           docker push "$image_uri_sha"
           docker push "$image_uri_latest"
 
-      - name: Skip AKS deployment when disabled
-        if: vars.CONFIGURE_AKS != 'true'
-        run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Setup Kubectl
-        if: vars.CONFIGURE_AKS == 'true'
-        uses: azure/setup-kubectl@v4
-
-      - name: Deploy the image to AKS
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-          IMAGE: ${{ steps.image.outputs.image_uri_sha }}
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
-          SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
-          SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
-          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
-        run: |
-          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-          sudo apt-get update && sudo apt-get install -y gettext-base
-
-          sql_fqdn=""
-          if [ -n "$SQL_SERVER_NAME" ]; then
-            sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
-          fi
-          if [ -z "$sql_fqdn" ]; then
-            echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
-            exit 1
-          fi
-          if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
-            echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
-            exit 1
-          fi
-
-          envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
-          kubectl create secret generic payroll-db -n "$K8S_NAMESPACE" \
-            --from-literal=connection-string="Server=tcp:${sql_fqdn},1433;Initial Catalog=PayrollDB;User ID=${SQL_ADMIN_USERNAME};Password=${SQL_ADMIN_PASSWORD};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
-          envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
-          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-
-      - name: AKS connectivity with DB
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
-        run: |
-          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
-          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
-            --sort-by=.metadata.creationTimestamp \
-            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
-          kubectl wait --for=condition=ready pod \
-            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
-            -n "$K8S_NAMESPACE" --timeout=180s
-          {
-            echo "### Deploy to ${ENVIRONMENT_NAME}"
-            echo ""
-            echo "- Namespace: ${K8S_NAMESPACE}"
-            echo "- Image: ${{ steps.image.outputs.image_uri_sha }}"
-            echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy_qa:
-    name: Deploy to qa
+  deploy_aks_qa:
+    name: Deploy the image to AKS
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: deploy_dev
-    if: github.event_name != 'pull_request' && needs.deploy_dev.result == 'success'
+    needs: push_acr_qa
+    if: github.event_name != 'pull_request' && needs.push_acr_qa.result == 'success' && vars.CONFIGURE_AKS == 'true'
     environment: qa
     concurrency: app-deploy-qa
     env:
@@ -272,6 +380,112 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Deploy the image to AKS
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          IMAGE: ${{ needs.push_acr_qa.outputs.image_uri_sha }}
+          K8S_NAMESPACE: ${{ needs.push_acr_qa.outputs.k8s_namespace }}
+          SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
+          SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
+          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          sudo apt-get update && sudo apt-get install -y gettext-base
+
+          sql_fqdn=""
+          if [ -n "$SQL_SERVER_NAME" ]; then
+            sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
+          fi
+          if [ -z "$sql_fqdn" ]; then
+            echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
+            exit 1
+          fi
+          if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
+            echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
+            exit 1
+          fi
+
+          envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
+          kubectl create secret generic payroll-db -n "$K8S_NAMESPACE" \
+            --from-literal=connection-string="Server=tcp:${sql_fqdn},1433;Initial Catalog=PayrollDB;User ID=${SQL_ADMIN_USERNAME};Password=${SQL_ADMIN_PASSWORD};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
+          envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+
+  aks_db_qa:
+    name: AKS connectivity with DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [push_acr_qa, deploy_aks_qa]
+    if: github.event_name != 'pull_request' && needs.deploy_aks_qa.result == 'success' && vars.CONFIGURE_AKS == 'true'
+    environment: qa
+    concurrency: app-connectivity-qa
+    env:
+      ENVIRONMENT_NAME: qa
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: AKS connectivity with DB
+        env:
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          K8S_NAMESPACE: ${{ needs.push_acr_qa.outputs.k8s_namespace }}
+          IMAGE_URI_SHA: ${{ needs.push_acr_qa.outputs.image_uri_sha }}
+        run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
+          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
+          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
+          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
+            --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
+          kubectl wait --for=condition=ready pod \
+            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
+            -n "$K8S_NAMESPACE" --timeout=180s
+          {
+            echo "### Deploy to ${ENVIRONMENT_NAME}"
+            echo ""
+            echo "- Namespace: ${K8S_NAMESPACE}"
+            echo "- Image: ${IMAGE_URI_SHA}"
+            echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  push_acr_uat:
+    name: Push the Docker image to ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: aks_db_qa
+    if: github.event_name != 'pull_request' && needs.aks_db_qa.result == 'success'
+    environment: uat
+    concurrency: app-push-uat
+    env:
+      ENVIRONMENT_NAME: uat
+    outputs:
+      image_uri_sha: ${{ steps.image.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.image.outputs.image_uri_latest }}
+      k8s_namespace: ${{ steps.image.outputs.k8s_namespace }}
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
         with:
@@ -315,76 +529,12 @@ jobs:
           docker push "$image_uri_sha"
           docker push "$image_uri_latest"
 
-      - name: Skip AKS deployment when disabled
-        if: vars.CONFIGURE_AKS != 'true'
-        run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Setup Kubectl
-        if: vars.CONFIGURE_AKS == 'true'
-        uses: azure/setup-kubectl@v4
-
-      - name: Deploy the image to AKS
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-          IMAGE: ${{ steps.image.outputs.image_uri_sha }}
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
-          SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
-          SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
-          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
-        run: |
-          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
-          sudo apt-get update && sudo apt-get install -y gettext-base
-
-          sql_fqdn=""
-          if [ -n "$SQL_SERVER_NAME" ]; then
-            sql_fqdn="${SQL_SERVER_NAME}.database.windows.net"
-          fi
-          if [ -z "$sql_fqdn" ]; then
-            echo "::error::SQL_SERVER_NAME must be configured for AKS deployment."
-            exit 1
-          fi
-          if [ -z "$SQL_ADMIN_USERNAME" ] || [ -z "$SQL_ADMIN_PASSWORD" ]; then
-            echo "::error::SQL_ADMIN_USERNAME and SQL_ADMIN_PASSWORD must be configured for AKS deployment."
-            exit 1
-          fi
-
-          envsubst '${K8S_NAMESPACE}' < k8s/namespace.yaml | kubectl apply -f -
-          kubectl create secret generic payroll-db -n "$K8S_NAMESPACE" \
-            --from-literal=connection-string="Server=tcp:${sql_fqdn},1433;Initial Catalog=PayrollDB;User ID=${SQL_ADMIN_USERNAME};Password=${SQL_ADMIN_PASSWORD};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          envsubst '${K8S_NAMESPACE}' < k8s/service.yaml | kubectl apply -f -
-          envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
-          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-
-      - name: AKS connectivity with DB
-        if: vars.CONFIGURE_AKS == 'true'
-        env:
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
-        run: |
-          kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
-          # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
-          current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
-            --sort-by=.metadata.creationTimestamp \
-            -o jsonpath='{.items[-1:].metadata.labels.pod-template-hash}')
-          kubectl wait --for=condition=ready pod \
-            -l "app=payroll-app,pod-template-hash=${current_rs_hash}" \
-            -n "$K8S_NAMESPACE" --timeout=180s
-          {
-            echo "### Deploy to ${ENVIRONMENT_NAME}"
-            echo ""
-            echo "- Namespace: ${K8S_NAMESPACE}"
-            echo "- Image: ${{ steps.image.outputs.image_uri_sha }}"
-            echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy_uat:
-    name: Deploy to uat
+  deploy_aks_uat:
+    name: Deploy the image to AKS
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: deploy_qa
-    if: github.event_name != 'pull_request' && needs.deploy_qa.result == 'success'
+    needs: push_acr_uat
+    if: github.event_name != 'pull_request' && needs.push_acr_uat.result == 'success' && vars.CONFIGURE_AKS == 'true'
     environment: uat
     concurrency: app-deploy-uat
     env:
@@ -403,64 +553,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.IMAGE_ARTIFACT_NAME }}
-
-      - name: Push the Docker image to ACR
-        id: image
-        shell: bash
-        env:
-          ACR_NAME: ${{ vars.ACR_NAME }}
-          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
-          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
-        run: |
-          # Load the image built once in the "Build app code" stage and reused for every environment.
-          docker load -i "${IMAGE_TAR}"
-
-          if [ -z "$ACR_NAME" ]; then
-            echo "::error::ACR_NAME must be configured for ${ENVIRONMENT_NAME}."
-            exit 1
-          fi
-          if [ -z "$IMAGE_REPOSITORY" ]; then
-            echo "::error::IMAGE_REPOSITORY must be configured for ${ENVIRONMENT_NAME}."
-            exit 1
-          fi
-          if [ -z "$K8S_NAMESPACE" ]; then
-            K8S_NAMESPACE="payroll-${ENVIRONMENT_NAME}"
-          fi
-
-          acr_login_server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
-          image_uri_sha="$acr_login_server/$IMAGE_REPOSITORY:${COMMIT_SHA}"
-          image_uri_latest="$acr_login_server/$IMAGE_REPOSITORY:latest"
-
-          echo "image_uri_sha=$image_uri_sha" >> "$GITHUB_OUTPUT"
-          echo "image_uri_latest=$image_uri_latest" >> "$GITHUB_OUTPUT"
-          echo "k8s_namespace=$K8S_NAMESPACE" >> "$GITHUB_OUTPUT"
-
-          az acr login --name "$ACR_NAME"
-
-          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_sha"
-          docker tag "${LOCAL_IMAGE_TAG}" "$image_uri_latest"
-          docker push "$image_uri_sha"
-          docker push "$image_uri_latest"
-
-      - name: Skip AKS deployment when disabled
-        if: vars.CONFIGURE_AKS != 'true'
-        run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Setup Kubectl
-        if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
-        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-          IMAGE: ${{ steps.image.outputs.image_uri_sha }}
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
+          IMAGE: ${{ needs.push_acr_uat.outputs.image_uri_sha }}
+          K8S_NAMESPACE: ${{ needs.push_acr_uat.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
@@ -489,11 +590,36 @@ jobs:
           envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
+  aks_db_uat:
+    name: AKS connectivity with DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [push_acr_uat, deploy_aks_uat]
+    if: github.event_name != 'pull_request' && needs.deploy_aks_uat.result == 'success' && vars.CONFIGURE_AKS == 'true'
+    environment: uat
+    concurrency: app-connectivity-uat
+    env:
+      ENVIRONMENT_NAME: uat
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
       - name: AKS connectivity with DB
-        if: vars.CONFIGURE_AKS == 'true'
         env:
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          K8S_NAMESPACE: ${{ needs.push_acr_uat.outputs.k8s_namespace }}
+          IMAGE_URI_SHA: ${{ needs.push_acr_uat.outputs.image_uri_sha }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
           current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
@@ -506,27 +632,26 @@ jobs:
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
             echo "- Namespace: ${K8S_NAMESPACE}"
-            echo "- Image: ${{ steps.image.outputs.image_uri_sha }}"
+            echo "- Image: ${IMAGE_URI_SHA}"
             echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  deploy_prod:
-    name: Deploy to prod
+  push_acr_prod:
+    name: Push the Docker image to ACR
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: deploy_uat
-    if: github.event_name != 'pull_request' && needs.deploy_uat.result == 'success'
+    timeout-minutes: 20
+    needs: aks_db_uat
+    if: github.event_name != 'pull_request' && needs.aks_db_uat.result == 'success'
     environment: prod
-    concurrency: app-deploy-prod
+    concurrency: app-push-prod
     env:
       ENVIRONMENT_NAME: prod
+    outputs:
+      image_uri_sha: ${{ steps.image.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.image.outputs.image_uri_latest }}
+      k8s_namespace: ${{ steps.image.outputs.k8s_namespace }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.COMMIT_SHA }}
-
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -577,21 +702,39 @@ jobs:
           docker push "$image_uri_sha"
           docker push "$image_uri_latest"
 
-      - name: Skip AKS deployment when disabled
-        if: vars.CONFIGURE_AKS != 'true'
-        run: echo "CONFIGURE_AKS is not true. Skipping AKS deployment for ${ENVIRONMENT_NAME}." >> "$GITHUB_STEP_SUMMARY"
+  deploy_aks_prod:
+    name: Deploy the image to AKS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: push_acr_prod
+    if: github.event_name != 'pull_request' && needs.push_acr_prod.result == 'success' && vars.CONFIGURE_AKS == 'true'
+    environment: prod
+    concurrency: app-deploy-prod
+    env:
+      ENVIRONMENT_NAME: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Setup Kubectl
-        if: vars.CONFIGURE_AKS == 'true'
         uses: azure/setup-kubectl@v4
 
       - name: Deploy the image to AKS
-        if: vars.CONFIGURE_AKS == 'true'
         env:
           AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
           AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
-          IMAGE: ${{ steps.image.outputs.image_uri_sha }}
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
+          IMAGE: ${{ needs.push_acr_prod.outputs.image_uri_sha }}
+          K8S_NAMESPACE: ${{ needs.push_acr_prod.outputs.k8s_namespace }}
           SQL_SERVER_NAME: ${{ vars.SQL_SERVER_NAME }}
           SQL_ADMIN_USERNAME: ${{ vars.SQL_ADMIN_USERNAME }}
           SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
@@ -620,11 +763,36 @@ jobs:
           envsubst '${IMAGE} ${K8S_NAMESPACE}' < k8s/deployment.yaml | kubectl apply -f -
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
 
+  aks_db_prod:
+    name: AKS connectivity with DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [push_acr_prod, deploy_aks_prod]
+    if: github.event_name != 'pull_request' && needs.deploy_aks_prod.result == 'success' && vars.CONFIGURE_AKS == 'true'
+    environment: prod
+    concurrency: app-connectivity-prod
+    env:
+      ENVIRONMENT_NAME: prod
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+
       - name: AKS connectivity with DB
-        if: vars.CONFIGURE_AKS == 'true'
         env:
-          K8S_NAMESPACE: ${{ steps.image.outputs.k8s_namespace }}
+          AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+          AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+          K8S_NAMESPACE: ${{ needs.push_acr_prod.outputs.k8s_namespace }}
+          IMAGE_URI_SHA: ${{ needs.push_acr_prod.outputs.image_uri_sha }}
         run: |
+          az aks get-credentials --name "$AKS_CLUSTER_NAME" --resource-group "$AKS_RESOURCE_GROUP" --overwrite-existing
           kubectl rollout status deployment/payroll-app -n "$K8S_NAMESPACE" --timeout=180s
           # Wait only on the current ReplicaSet's pods so terminating old pods from the rollout are not selected.
           current_rs_hash=$(kubectl get rs -n "$K8S_NAMESPACE" -l app=payroll-app \
@@ -637,6 +805,6 @@ jobs:
             echo "### Deploy to ${ENVIRONMENT_NAME}"
             echo ""
             echo "- Namespace: ${K8S_NAMESPACE}"
-            echo "- Image: ${{ steps.image.outputs.image_uri_sha }}"
+            echo "- Image: ${IMAGE_URI_SHA}"
             echo "- Result: payroll-app pods are Ready. Readiness requires the database health check to pass."
           } >> "$GITHUB_STEP_SUMMARY"
