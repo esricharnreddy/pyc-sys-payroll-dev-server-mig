@@ -1,4 +1,4 @@
-name: Infrastructure
+﻿name: Infrastructure
 
 on:
   push:
@@ -59,15 +59,36 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-  infra_dev:
-    name: dev Infrastructure
+  dev_gate:
+    name: dev Infrastructure Gate
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     needs: validate
     if: github.event_name != 'pull_request'
     environment: dev
-    concurrency: infrastructure-dev
+    outputs:
+      create_rg: ${{ steps.toggles.outputs.create_rg }}
+      create_acr: ${{ steps.toggles.outputs.create_acr }}
+      create_sql: ${{ steps.toggles.outputs.create_sql }}
+      configure_aks: ${{ steps.toggles.outputs.configure_aks }}
+      grant_aks_acr_pull: ${{ steps.toggles.outputs.grant_aks_acr_pull }}
+    steps:
+      - name: Capture environment toggles
+        id: toggles
+        run: |
+          echo "create_rg=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "create_acr=${{ vars.CREATE_ACR || 'true' }}" >> "$GITHUB_OUTPUT"
+          echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
 
+  dev_rg:
+    name: dev Resource Group
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dev_gate
+    if: needs.dev_gate.outputs.create_rg == 'true'
+    environment: dev
     env:
       ENVIRONMENT_NAME: dev
       ARM_USE_OIDC: true
@@ -89,12 +110,367 @@ jobs:
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
       TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
-
     defaults:
       run:
         shell: bash
         working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_resource_group.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} resource group plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} resource group outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dev_acr:
+    name: dev ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dev_gate
+    if: needs.dev_gate.outputs.create_acr == 'true'
+    environment: dev
+    env:
+      ENVIRONMENT_NAME: dev
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_container_registry.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} acr plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} acr outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dev_sql:
+    name: dev SQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dev_gate
+    if: needs.dev_gate.outputs.create_sql == 'true'
+    environment: dev
+    env:
+      ENVIRONMENT_NAME: dev
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_mssql_server.this \
+            -target=azurerm_mssql_database.this \
+            -target=azurerm_mssql_firewall_rule.allow_azure_services \
+            -target=azurerm_mssql_firewall_rule.allowed \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} sql plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} sql outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dev_aks_acr_pull:
+    name: dev AKS AcrPull
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dev_gate
+    if: needs.dev_gate.outputs.configure_aks == 'true' && needs.dev_gate.outputs.grant_aks_acr_pull == 'true'
+    environment: dev
+    env:
+      ENVIRONMENT_NAME: dev
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -179,6 +555,8 @@ jobs:
           terraform plan \
             -input=false \
             -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_role_assignment.aks_acr_pull \
             -var="location=${{ vars.AZURE_LOCATION }}" \
             -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
             -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
@@ -190,7 +568,7 @@ jobs:
       - name: Publish Plan Summary
         run: |
           {
-            echo "### ${ENVIRONMENT_NAME} infrastructure plan"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull plan"
             echo ""
             echo "- Environment: ${ENVIRONMENT_NAME}"
             echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
@@ -200,31 +578,57 @@ jobs:
 
       - name: Terraform Apply
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
 
       - name: Publish Outputs Summary
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
         run: |
           {
             echo ""
-            echo "### ${ENVIRONMENT_NAME} infrastructure outputs"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull outputs"
             echo ""
-            echo "- Resource group: $(terraform output -raw resource_group_name)"
-            echo "- ACR: $(terraform output -raw acr_name)"
-            echo "- ACR login server: $(terraform output -raw acr_login_server)"
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
             echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
             echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  infra_qa:
-    name: qa Infrastructure
+  qa_gate:
+    name: qa Infrastructure Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - dev_gate
+      - dev_rg
+      - dev_acr
+      - dev_sql
+      - dev_aks_acr_pull
+    if: always() && github.event_name != 'pull_request' && needs.dev_gate.result == 'success' && needs.dev_rg.result != 'failure' && needs.dev_rg.result != 'cancelled' && needs.dev_acr.result != 'failure' && needs.dev_acr.result != 'cancelled' && needs.dev_sql.result != 'failure' && needs.dev_sql.result != 'cancelled' && needs.dev_aks_acr_pull.result != 'failure' && needs.dev_aks_acr_pull.result != 'cancelled'
+    environment: qa
+    outputs:
+      create_rg: ${{ steps.toggles.outputs.create_rg }}
+      create_acr: ${{ steps.toggles.outputs.create_acr }}
+      create_sql: ${{ steps.toggles.outputs.create_sql }}
+      configure_aks: ${{ steps.toggles.outputs.configure_aks }}
+      grant_aks_acr_pull: ${{ steps.toggles.outputs.grant_aks_acr_pull }}
+    steps:
+      - name: Capture environment toggles
+        id: toggles
+        run: |
+          echo "create_rg=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "create_acr=${{ vars.CREATE_ACR || 'true' }}" >> "$GITHUB_OUTPUT"
+          echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
+
+  qa_rg:
+    name: qa Resource Group
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: infra_dev
-    if: github.event_name != 'pull_request' && needs.infra_dev.result == 'success'
+    needs: qa_gate
+    if: needs.qa_gate.outputs.create_rg == 'true'
     environment: qa
-    concurrency: infrastructure-qa
-
     env:
       ENVIRONMENT_NAME: qa
       ARM_USE_OIDC: true
@@ -246,12 +650,367 @@ jobs:
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
       TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
-
     defaults:
       run:
         shell: bash
         working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_resource_group.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} resource group plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} resource group outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  qa_acr:
+    name: qa ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: qa_gate
+    if: needs.qa_gate.outputs.create_acr == 'true'
+    environment: qa
+    env:
+      ENVIRONMENT_NAME: qa
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_container_registry.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} acr plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} acr outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  qa_sql:
+    name: qa SQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: qa_gate
+    if: needs.qa_gate.outputs.create_sql == 'true'
+    environment: qa
+    env:
+      ENVIRONMENT_NAME: qa
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_mssql_server.this \
+            -target=azurerm_mssql_database.this \
+            -target=azurerm_mssql_firewall_rule.allow_azure_services \
+            -target=azurerm_mssql_firewall_rule.allowed \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} sql plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} sql outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  qa_aks_acr_pull:
+    name: qa AKS AcrPull
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: qa_gate
+    if: needs.qa_gate.outputs.configure_aks == 'true' && needs.qa_gate.outputs.grant_aks_acr_pull == 'true'
+    environment: qa
+    env:
+      ENVIRONMENT_NAME: qa
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -336,6 +1095,8 @@ jobs:
           terraform plan \
             -input=false \
             -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_role_assignment.aks_acr_pull \
             -var="location=${{ vars.AZURE_LOCATION }}" \
             -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
             -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
@@ -347,7 +1108,7 @@ jobs:
       - name: Publish Plan Summary
         run: |
           {
-            echo "### ${ENVIRONMENT_NAME} infrastructure plan"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull plan"
             echo ""
             echo "- Environment: ${ENVIRONMENT_NAME}"
             echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
@@ -357,31 +1118,57 @@ jobs:
 
       - name: Terraform Apply
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
 
       - name: Publish Outputs Summary
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
         run: |
           {
             echo ""
-            echo "### ${ENVIRONMENT_NAME} infrastructure outputs"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull outputs"
             echo ""
-            echo "- Resource group: $(terraform output -raw resource_group_name)"
-            echo "- ACR: $(terraform output -raw acr_name)"
-            echo "- ACR login server: $(terraform output -raw acr_login_server)"
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
             echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
             echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  infra_uat:
-    name: uat Infrastructure
+  uat_gate:
+    name: uat Infrastructure Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - qa_gate
+      - qa_rg
+      - qa_acr
+      - qa_sql
+      - qa_aks_acr_pull
+    if: always() && github.event_name != 'pull_request' && needs.qa_gate.result == 'success' && needs.qa_rg.result != 'failure' && needs.qa_rg.result != 'cancelled' && needs.qa_acr.result != 'failure' && needs.qa_acr.result != 'cancelled' && needs.qa_sql.result != 'failure' && needs.qa_sql.result != 'cancelled' && needs.qa_aks_acr_pull.result != 'failure' && needs.qa_aks_acr_pull.result != 'cancelled'
+    environment: uat
+    outputs:
+      create_rg: ${{ steps.toggles.outputs.create_rg }}
+      create_acr: ${{ steps.toggles.outputs.create_acr }}
+      create_sql: ${{ steps.toggles.outputs.create_sql }}
+      configure_aks: ${{ steps.toggles.outputs.configure_aks }}
+      grant_aks_acr_pull: ${{ steps.toggles.outputs.grant_aks_acr_pull }}
+    steps:
+      - name: Capture environment toggles
+        id: toggles
+        run: |
+          echo "create_rg=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "create_acr=${{ vars.CREATE_ACR || 'true' }}" >> "$GITHUB_OUTPUT"
+          echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
+
+  uat_rg:
+    name: uat Resource Group
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: infra_qa
-    if: github.event_name != 'pull_request' && needs.infra_qa.result == 'success'
+    needs: uat_gate
+    if: needs.uat_gate.outputs.create_rg == 'true'
     environment: uat
-    concurrency: infrastructure-uat
-
     env:
       ENVIRONMENT_NAME: uat
       ARM_USE_OIDC: true
@@ -403,12 +1190,367 @@ jobs:
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
       TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
-
     defaults:
       run:
         shell: bash
         working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_resource_group.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} resource group plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} resource group outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  uat_acr:
+    name: uat ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: uat_gate
+    if: needs.uat_gate.outputs.create_acr == 'true'
+    environment: uat
+    env:
+      ENVIRONMENT_NAME: uat
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_container_registry.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} acr plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} acr outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  uat_sql:
+    name: uat SQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: uat_gate
+    if: needs.uat_gate.outputs.create_sql == 'true'
+    environment: uat
+    env:
+      ENVIRONMENT_NAME: uat
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_mssql_server.this \
+            -target=azurerm_mssql_database.this \
+            -target=azurerm_mssql_firewall_rule.allow_azure_services \
+            -target=azurerm_mssql_firewall_rule.allowed \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} sql plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} sql outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  uat_aks_acr_pull:
+    name: uat AKS AcrPull
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: uat_gate
+    if: needs.uat_gate.outputs.configure_aks == 'true' && needs.uat_gate.outputs.grant_aks_acr_pull == 'true'
+    environment: uat
+    env:
+      ENVIRONMENT_NAME: uat
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -493,6 +1635,8 @@ jobs:
           terraform plan \
             -input=false \
             -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_role_assignment.aks_acr_pull \
             -var="location=${{ vars.AZURE_LOCATION }}" \
             -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
             -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
@@ -504,7 +1648,7 @@ jobs:
       - name: Publish Plan Summary
         run: |
           {
-            echo "### ${ENVIRONMENT_NAME} infrastructure plan"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull plan"
             echo ""
             echo "- Environment: ${ENVIRONMENT_NAME}"
             echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
@@ -514,31 +1658,57 @@ jobs:
 
       - name: Terraform Apply
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
 
       - name: Publish Outputs Summary
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
         run: |
           {
             echo ""
-            echo "### ${ENVIRONMENT_NAME} infrastructure outputs"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull outputs"
             echo ""
-            echo "- Resource group: $(terraform output -raw resource_group_name)"
-            echo "- ACR: $(terraform output -raw acr_name)"
-            echo "- ACR login server: $(terraform output -raw acr_login_server)"
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
             echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
             echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  infra_prod:
-    name: prod Infrastructure
+  prod_gate:
+    name: prod Infrastructure Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - uat_gate
+      - uat_rg
+      - uat_acr
+      - uat_sql
+      - uat_aks_acr_pull
+    if: always() && github.event_name != 'pull_request' && needs.uat_gate.result == 'success' && needs.uat_rg.result != 'failure' && needs.uat_rg.result != 'cancelled' && needs.uat_acr.result != 'failure' && needs.uat_acr.result != 'cancelled' && needs.uat_sql.result != 'failure' && needs.uat_sql.result != 'cancelled' && needs.uat_aks_acr_pull.result != 'failure' && needs.uat_aks_acr_pull.result != 'cancelled'
+    environment: prod
+    outputs:
+      create_rg: ${{ steps.toggles.outputs.create_rg }}
+      create_acr: ${{ steps.toggles.outputs.create_acr }}
+      create_sql: ${{ steps.toggles.outputs.create_sql }}
+      configure_aks: ${{ steps.toggles.outputs.configure_aks }}
+      grant_aks_acr_pull: ${{ steps.toggles.outputs.grant_aks_acr_pull }}
+    steps:
+      - name: Capture environment toggles
+        id: toggles
+        run: |
+          echo "create_rg=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "create_acr=${{ vars.CREATE_ACR || 'true' }}" >> "$GITHUB_OUTPUT"
+          echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
+
+  prod_rg:
+    name: prod Resource Group
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: infra_uat
-    if: github.event_name != 'pull_request' && needs.infra_uat.result == 'success'
+    needs: prod_gate
+    if: needs.prod_gate.outputs.create_rg == 'true'
     environment: prod
-    concurrency: infrastructure-prod
-
     env:
       ENVIRONMENT_NAME: prod
       ARM_USE_OIDC: true
@@ -560,12 +1730,367 @@ jobs:
       TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
       TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
       TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
-
     defaults:
       run:
         shell: bash
         working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_resource_group.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} resource group plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} resource group outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prod_acr:
+    name: prod ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: prod_gate
+    if: needs.prod_gate.outputs.create_acr == 'true'
+    environment: prod
+    env:
+      ENVIRONMENT_NAME: prod
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_container_registry.this \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} acr plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} acr outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prod_sql:
+    name: prod SQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: prod_gate
+    if: needs.prod_gate.outputs.create_sql == 'true'
+    environment: prod
+    env:
+      ENVIRONMENT_NAME: prod
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Validate required environment variables
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          missing=0
+          for variable_name in AZURE_LOCATION RESOURCE_GROUP_NAME ACR_NAME; do
+            if [ -z "${!variable_name}" ]; then
+              echo "::error::${variable_name} must be configured in the ${ENVIRONMENT_NAME} GitHub environment."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_mssql_server.this \
+            -target=azurerm_mssql_database.this \
+            -target=azurerm_mssql_firewall_rule.allow_azure_services \
+            -target=azurerm_mssql_firewall_rule.allowed \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="acr_resource_group_name=${{ vars.ACR_RESOURCE_GROUP_NAME }}" \
+            -var="create_acr=${{ vars.CREATE_ACR || 'true' }}" \
+            -var="tags={\"environment\":\"${ENVIRONMENT_NAME}\",\"Application\":\"dbmigration\",\"Costcenter\":\"it\"}"
+
+      - name: Publish Plan Summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_NAME} sql plan"
+            echo ""
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
+            echo "- ACR variable: ${{ vars.ACR_NAME }}"
+            echo "- Apply requested: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
+
+      - name: Publish Outputs Summary
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo ""
+            echo "### ${ENVIRONMENT_NAME} sql outputs"
+            echo ""
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
+            echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
+            echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prod_aks_acr_pull:
+    name: prod AKS AcrPull
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: prod_gate
+    if: needs.prod_gate.outputs.configure_aks == 'true' && needs.prod_gate.outputs.grant_aks_acr_pull == 'true'
+    environment: prod
+    env:
+      ENVIRONMENT_NAME: prod
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+      TF_VAR_create_resource_group: ${{ vars.CREATE_RESOURCE_GROUP || 'false' }}
+      TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+      TF_VAR_acr_resource_group_name: ${{ vars.ACR_RESOURCE_GROUP_NAME }}
+      TF_VAR_create_acr: ${{ vars.CREATE_ACR || 'true' }}
+      TF_VAR_create_sql: ${{ vars.CREATE_SQL || 'false' }}
+      TF_VAR_sql_server_name: ${{ vars.SQL_SERVER_NAME }}
+      TF_VAR_sql_location: ${{ vars.SQL_LOCATION }}
+      TF_VAR_sql_admin_username: ${{ vars.SQL_ADMIN_USERNAME }}
+      TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      TF_VAR_configure_aks: ${{ vars.CONFIGURE_AKS || 'false' }}
+      TF_VAR_aks_cluster_name: ${{ vars.AKS_CLUSTER_NAME }}
+      TF_VAR_aks_resource_group_name: ${{ vars.AKS_RESOURCE_GROUP }}
+      TF_VAR_grant_aks_acr_pull: ${{ vars.GRANT_AKS_ACR_PULL || 'false' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -650,6 +2175,8 @@ jobs:
           terraform plan \
             -input=false \
             -out=tfplan \
+            -lock-timeout=300s \
+            -target=azurerm_role_assignment.aks_acr_pull \
             -var="location=${{ vars.AZURE_LOCATION }}" \
             -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
             -var="create_resource_group=${{ vars.CREATE_RESOURCE_GROUP || 'false' }}" \
@@ -661,7 +2188,7 @@ jobs:
       - name: Publish Plan Summary
         run: |
           {
-            echo "### ${ENVIRONMENT_NAME} infrastructure plan"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull plan"
             echo ""
             echo "- Environment: ${ENVIRONMENT_NAME}"
             echo "- Resource group: ${{ vars.RESOURCE_GROUP_NAME }}"
@@ -671,18 +2198,18 @@ jobs:
 
       - name: Terraform Apply
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve -lock-timeout=300s tfplan
 
       - name: Publish Outputs Summary
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.apply == 'true'
         run: |
           {
             echo ""
-            echo "### ${ENVIRONMENT_NAME} infrastructure outputs"
+            echo "### ${ENVIRONMENT_NAME} aks acr pull outputs"
             echo ""
-            echo "- Resource group: $(terraform output -raw resource_group_name)"
-            echo "- ACR: $(terraform output -raw acr_name)"
-            echo "- ACR login server: $(terraform output -raw acr_login_server)"
+            echo "- Resource group: $(terraform output -raw resource_group_name 2>/dev/null || true)"
+            echo "- ACR: $(terraform output -raw acr_name 2>/dev/null || true)"
+            echo "- ACR login server: $(terraform output -raw acr_login_server 2>/dev/null || true)"
             echo "- SQL server FQDN: $(terraform output -raw sql_server_fqdn 2>/dev/null || true)"
             echo "- SQL database: $(terraform output -raw sql_database_name 2>/dev/null || true)"
           } >> "$GITHUB_STEP_SUMMARY"
