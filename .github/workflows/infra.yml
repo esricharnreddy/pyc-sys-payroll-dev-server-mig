@@ -82,6 +82,17 @@ jobs:
           echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
 
+      - name: Print gate output summary
+        run: |
+          echo "### dev gate outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "| toggle | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_rg | \`${{ steps.toggles.outputs.create_rg }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_acr | \`${{ steps.toggles.outputs.create_acr }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_sql | \`${{ steps.toggles.outputs.create_sql }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| configure_aks | \`${{ steps.toggles.outputs.configure_aks }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| grant_aks_acr_pull | \`${{ steps.toggles.outputs.grant_aks_acr_pull }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
   dev_rg:
     name: dev Resource Group
     runs-on: ubuntu-latest
@@ -621,6 +632,17 @@ jobs:
           echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Print gate output summary
+        run: |
+          echo "### qa gate outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "| toggle | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_rg | \`${{ steps.toggles.outputs.create_rg }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_acr | \`${{ steps.toggles.outputs.create_acr }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_sql | \`${{ steps.toggles.outputs.create_sql }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| configure_aks | \`${{ steps.toggles.outputs.configure_aks }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| grant_aks_acr_pull | \`${{ steps.toggles.outputs.grant_aks_acr_pull }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   qa_rg:
     name: qa Resource Group
@@ -1162,6 +1184,17 @@ jobs:
           echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
 
+      - name: Print gate output summary
+        run: |
+          echo "### uat gate outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "| toggle | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_rg | \`${{ steps.toggles.outputs.create_rg }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_acr | \`${{ steps.toggles.outputs.create_acr }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_sql | \`${{ steps.toggles.outputs.create_sql }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| configure_aks | \`${{ steps.toggles.outputs.configure_aks }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| grant_aks_acr_pull | \`${{ steps.toggles.outputs.grant_aks_acr_pull }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
   uat_rg:
     name: uat Resource Group
     runs-on: ubuntu-latest
@@ -1701,6 +1734,17 @@ jobs:
           echo "create_sql=${{ vars.CREATE_SQL || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "configure_aks=${{ vars.CONFIGURE_AKS || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "grant_aks_acr_pull=${{ vars.GRANT_AKS_ACR_PULL || 'false' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Print gate output summary
+        run: |
+          echo "### prod gate outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "| toggle | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_rg | \`${{ steps.toggles.outputs.create_rg }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_acr | \`${{ steps.toggles.outputs.create_acr }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| create_sql | \`${{ steps.toggles.outputs.create_sql }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| configure_aks | \`${{ steps.toggles.outputs.configure_aks }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| grant_aks_acr_pull | \`${{ steps.toggles.outputs.grant_aks_acr_pull }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   prod_rg:
     name: prod Resource Group
