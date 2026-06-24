@@ -204,8 +204,10 @@ jobs:
     name: dev ACR
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: dev_gate
-    if: needs.dev_gate.outputs.create_acr == 'true'
+    needs:
+      - dev_gate
+      - dev_rg
+    if: always() && needs.dev_gate.result == 'success' && needs.dev_gate.outputs.create_acr == 'true' && needs.dev_rg.result != 'failure' && needs.dev_rg.result != 'cancelled'
     environment: dev
     env:
       ENVIRONMENT_NAME: dev
@@ -322,8 +324,11 @@ jobs:
     name: dev SQL
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: dev_gate
-    if: needs.dev_gate.outputs.create_sql == 'true'
+    needs:
+      - dev_gate
+      - dev_rg
+      - dev_acr
+    if: always() && needs.dev_gate.result == 'success' && needs.dev_gate.outputs.create_sql == 'true' && needs.dev_rg.result != 'failure' && needs.dev_rg.result != 'cancelled' && needs.dev_acr.result != 'failure' && needs.dev_acr.result != 'cancelled'
     environment: dev
     env:
       ENVIRONMENT_NAME: dev
@@ -443,8 +448,12 @@ jobs:
     name: dev AKS AcrPull
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: dev_gate
-    if: needs.dev_gate.outputs.configure_aks == 'true' && needs.dev_gate.outputs.grant_aks_acr_pull == 'true'
+    needs:
+      - dev_gate
+      - dev_rg
+      - dev_acr
+      - dev_sql
+    if: always() && needs.dev_gate.result == 'success' && needs.dev_gate.outputs.configure_aks == 'true' && needs.dev_gate.outputs.grant_aks_acr_pull == 'true' && needs.dev_rg.result != 'failure' && needs.dev_rg.result != 'cancelled' && needs.dev_acr.result != 'failure' && needs.dev_acr.result != 'cancelled' && needs.dev_sql.result != 'failure' && needs.dev_sql.result != 'cancelled'
     environment: dev
     env:
       ENVIRONMENT_NAME: dev
@@ -744,8 +753,10 @@ jobs:
     name: qa ACR
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: qa_gate
-    if: needs.qa_gate.outputs.create_acr == 'true'
+    needs:
+      - qa_gate
+      - qa_rg
+    if: always() && needs.qa_gate.result == 'success' && needs.qa_gate.outputs.create_acr == 'true' && needs.qa_rg.result != 'failure' && needs.qa_rg.result != 'cancelled'
     environment: qa
     env:
       ENVIRONMENT_NAME: qa
@@ -862,8 +873,11 @@ jobs:
     name: qa SQL
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: qa_gate
-    if: needs.qa_gate.outputs.create_sql == 'true'
+    needs:
+      - qa_gate
+      - qa_rg
+      - qa_acr
+    if: always() && needs.qa_gate.result == 'success' && needs.qa_gate.outputs.create_sql == 'true' && needs.qa_rg.result != 'failure' && needs.qa_rg.result != 'cancelled' && needs.qa_acr.result != 'failure' && needs.qa_acr.result != 'cancelled'
     environment: qa
     env:
       ENVIRONMENT_NAME: qa
@@ -983,8 +997,12 @@ jobs:
     name: qa AKS AcrPull
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: qa_gate
-    if: needs.qa_gate.outputs.configure_aks == 'true' && needs.qa_gate.outputs.grant_aks_acr_pull == 'true'
+    needs:
+      - qa_gate
+      - qa_rg
+      - qa_acr
+      - qa_sql
+    if: always() && needs.qa_gate.result == 'success' && needs.qa_gate.outputs.configure_aks == 'true' && needs.qa_gate.outputs.grant_aks_acr_pull == 'true' && needs.qa_rg.result != 'failure' && needs.qa_rg.result != 'cancelled' && needs.qa_acr.result != 'failure' && needs.qa_acr.result != 'cancelled' && needs.qa_sql.result != 'failure' && needs.qa_sql.result != 'cancelled'
     environment: qa
     env:
       ENVIRONMENT_NAME: qa
@@ -1284,8 +1302,10 @@ jobs:
     name: uat ACR
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: uat_gate
-    if: needs.uat_gate.outputs.create_acr == 'true'
+    needs:
+      - uat_gate
+      - uat_rg
+    if: always() && needs.uat_gate.result == 'success' && needs.uat_gate.outputs.create_acr == 'true' && needs.uat_rg.result != 'failure' && needs.uat_rg.result != 'cancelled'
     environment: uat
     env:
       ENVIRONMENT_NAME: uat
@@ -1402,8 +1422,11 @@ jobs:
     name: uat SQL
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: uat_gate
-    if: needs.uat_gate.outputs.create_sql == 'true'
+    needs:
+      - uat_gate
+      - uat_rg
+      - uat_acr
+    if: always() && needs.uat_gate.result == 'success' && needs.uat_gate.outputs.create_sql == 'true' && needs.uat_rg.result != 'failure' && needs.uat_rg.result != 'cancelled' && needs.uat_acr.result != 'failure' && needs.uat_acr.result != 'cancelled'
     environment: uat
     env:
       ENVIRONMENT_NAME: uat
@@ -1523,8 +1546,12 @@ jobs:
     name: uat AKS AcrPull
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: uat_gate
-    if: needs.uat_gate.outputs.configure_aks == 'true' && needs.uat_gate.outputs.grant_aks_acr_pull == 'true'
+    needs:
+      - uat_gate
+      - uat_rg
+      - uat_acr
+      - uat_sql
+    if: always() && needs.uat_gate.result == 'success' && needs.uat_gate.outputs.configure_aks == 'true' && needs.uat_gate.outputs.grant_aks_acr_pull == 'true' && needs.uat_rg.result != 'failure' && needs.uat_rg.result != 'cancelled' && needs.uat_acr.result != 'failure' && needs.uat_acr.result != 'cancelled' && needs.uat_sql.result != 'failure' && needs.uat_sql.result != 'cancelled'
     environment: uat
     env:
       ENVIRONMENT_NAME: uat
@@ -1824,8 +1851,10 @@ jobs:
     name: prod ACR
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: prod_gate
-    if: needs.prod_gate.outputs.create_acr == 'true'
+    needs:
+      - prod_gate
+      - prod_rg
+    if: always() && needs.prod_gate.result == 'success' && needs.prod_gate.outputs.create_acr == 'true' && needs.prod_rg.result != 'failure' && needs.prod_rg.result != 'cancelled'
     environment: prod
     env:
       ENVIRONMENT_NAME: prod
@@ -1942,8 +1971,11 @@ jobs:
     name: prod SQL
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: prod_gate
-    if: needs.prod_gate.outputs.create_sql == 'true'
+    needs:
+      - prod_gate
+      - prod_rg
+      - prod_acr
+    if: always() && needs.prod_gate.result == 'success' && needs.prod_gate.outputs.create_sql == 'true' && needs.prod_rg.result != 'failure' && needs.prod_rg.result != 'cancelled' && needs.prod_acr.result != 'failure' && needs.prod_acr.result != 'cancelled'
     environment: prod
     env:
       ENVIRONMENT_NAME: prod
@@ -2063,8 +2095,12 @@ jobs:
     name: prod AKS AcrPull
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: prod_gate
-    if: needs.prod_gate.outputs.configure_aks == 'true' && needs.prod_gate.outputs.grant_aks_acr_pull == 'true'
+    needs:
+      - prod_gate
+      - prod_rg
+      - prod_acr
+      - prod_sql
+    if: always() && needs.prod_gate.result == 'success' && needs.prod_gate.outputs.configure_aks == 'true' && needs.prod_gate.outputs.grant_aks_acr_pull == 'true' && needs.prod_rg.result != 'failure' && needs.prod_rg.result != 'cancelled' && needs.prod_acr.result != 'failure' && needs.prod_acr.result != 'cancelled' && needs.prod_sql.result != 'failure' && needs.prod_sql.result != 'cancelled'
     environment: prod
     env:
       ENVIRONMENT_NAME: prod
