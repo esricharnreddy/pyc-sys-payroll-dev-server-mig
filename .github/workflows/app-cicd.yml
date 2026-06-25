@@ -6,6 +6,7 @@ on:
     paths:
       - 'Program.cs'
       - 'PayrollApp.csproj'
+      - 'PayrollApp.Tests/**'
       - 'appsettings.json'
       - 'global.json'
       - 'Data/**'
@@ -23,6 +24,7 @@ on:
     paths:
       - 'Program.cs'
       - 'PayrollApp.csproj'
+      - 'PayrollApp.Tests/**'
       - 'appsettings.json'
       - 'global.json'
       - 'Data/**'
@@ -45,6 +47,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  security-events: write
 
 concurrency:
   group: app-code-build-pipeline-${{ github.event.workflow_run.head_branch || github.ref }}
@@ -58,41 +61,169 @@ env:
   LOCAL_IMAGE_TAG: payroll-app-build:${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  build_app_code_create_docker_image:
-    name: Build & Containerize Application
+  gitleaks_scan:
+    name: Gitleaks Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.COMMIT_SHA }}
+          fetch-depth: 0
+
+      - name: Run Gitleaks action
+        id: gitleaks_action
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_SUMMARY: 'true'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'true'
+
+      - name: Generate SARIF report
+        id: gitleaks_sarif
+        continue-on-error: true
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:latest \
+            git --report-format sarif --report-path gitleaks.sarif --redact .
+
+      - name: Upload Gitleaks SARIF
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Fail on leaked secrets
+        if: steps.gitleaks_action.outcome != 'success' || steps.gitleaks_sarif.outcome != 'success'
+        run: |
+          echo "::error::Gitleaks detected one or more secrets. Review the job summary and SARIF report."
+          exit 1
+
+  sonarqube_quality_gate:
+    name: SonarQube Quality Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: gitleaks_scan
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    env:
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore app code
-        run: dotnet restore PayrollApp.csproj
+      - name: Cache SonarQube packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
 
-      - name: Build app code
-        run: dotnet build PayrollApp.csproj --configuration Release --no-restore
+      - name: Cache SonarQube scanner
+        id: cache-sonar-scanner
+        uses: actions/cache@v4
+        with:
+          path: ./.sonar/scanner
+          key: ${{ runner.os }}-sonar-scanner
+          restore-keys: ${{ runner.os }}-sonar-scanner
 
-      - name: Test app code if test projects exist
+      - name: Install SonarQube scanner
+        if: steps.cache-sonar-scanner.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          mapfile -t test_projects < <(find . -name '*Test*.csproj' -o -name '*Tests*.csproj')
-          if [ "${#test_projects[@]}" -eq 0 ]; then
-            echo "No test projects found. Skipping dotnet test."
-            exit 0
+          mkdir -p ./.sonar/scanner
+          dotnet tool update dotnet-sonarscanner --tool-path ./.sonar/scanner
+
+      - name: Decide whether to run SonarQube analysis
+        id: sonar_mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = 'push' ] && [ "${{ github.ref }}" = 'refs/heads/dev' ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-          for project in "${test_projects[@]}"; do
-            dotnet test "$project" --configuration Release
-          done
+      - name: Restore solution for quality checks
+        run: dotnet restore PayrollApp.Tests/PayrollApp.Tests.csproj
+
+      - name: Begin SonarQube analysis
+        if: steps.sonar_mode.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          ./.sonar/scanner/dotnet-sonarscanner begin \
+            /k:"${{ github.event.repository.name }}" \
+            /n:"${{ github.event.repository.name }}" \
+            /d:sonar.host.url="${SONAR_HOST_URL}" \
+            /d:sonar.token="${SONAR_TOKEN}" \
+            /d:sonar.qualitygate.wait=true \
+            /d:sonar.qualitygate.timeout=600 \
+            /d:sonar.cs.vstest.reportsPaths="TestResults/*.trx"
+
+      - name: Build application and tests
+        run: dotnet build PayrollApp.Tests/PayrollApp.Tests.csproj --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test PayrollApp.Tests/PayrollApp.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=payroll-tests.trx" --results-directory TestResults
+
+      - name: End SonarQube analysis
+        if: steps.sonar_mode.outputs.enabled == 'true'
+        shell: bash
+        run: ./.sonar/scanner/dotnet-sonarscanner end /d:sonar.token="${SONAR_TOKEN}"
+
+      - name: Publish quality summary
+        shell: bash
+        run: |
+          {
+            echo "### SonarQube Quality Gate"
+            echo ""
+            echo "- Event: ${{ github.event_name }}"
+            echo "- SonarQube analysis executed: ${{ steps.sonar_mode.outputs.enabled }}"
+            echo "- Tests project: PayrollApp.Tests/PayrollApp.Tests.csproj"
+            if [ "${{ steps.sonar_mode.outputs.enabled }}" != 'true' ]; then
+              echo "- Note: SonarQube Community Edition is limited to dev branch analysis in this workflow."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_app_code_create_docker_image:
+    name: Build & Containerize Application
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - gitleaks_scan
+      - sonarqube_quality_gate
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.COMMIT_SHA }}
 
       - name: Create the Docker image
         run: docker build -t "${LOCAL_IMAGE_TAG}" .
@@ -236,7 +367,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.COMMIT_SHA }}
 
@@ -371,7 +502,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.COMMIT_SHA }}
 
@@ -506,7 +637,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.COMMIT_SHA }}
 
@@ -641,7 +772,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.COMMIT_SHA }}
 
