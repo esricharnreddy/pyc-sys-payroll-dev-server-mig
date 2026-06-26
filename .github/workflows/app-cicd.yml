@@ -163,7 +163,7 @@ jobs:
         id: sonar_mode
         shell: bash
         run: |
-          if [ "${{ github.ref }}" = 'refs/heads/prod' ]; then
+          if [ "${{ github.ref }}" = 'refs/heads/dev' ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -206,7 +206,7 @@ jobs:
             echo "- SonarQube analysis executed: ${{ steps.sonar_mode.outputs.enabled }}"
             echo "- Tests project: PayrollApp.Tests/PayrollApp.Tests.csproj"
             if [ "${{ steps.sonar_mode.outputs.enabled }}" != 'true' ]; then
-              echo "- Note: SonarQube Community Edition is intentionally executed only for the prod branch because Community Edition supports a single quality baseline. Gitleaks executes on every branch."
+              echo "- Note: SonarQube Community Edition is intentionally executed only for the dev branch. The dev branch is the continuous integration quality gate. Only artifacts that pass secret scanning, code quality analysis, and unit testing are promoted through DEV -> QA -> UAT -> PROD."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
