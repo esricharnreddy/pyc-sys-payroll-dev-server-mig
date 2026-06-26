@@ -2,7 +2,7 @@ name: App code build pipeline
 
 on:
   push:
-    branches: [ dev ]
+    branches: [ dev, qa, uat, prod ]
     paths:
       - 'Program.cs'
       - 'PayrollApp.csproj'
@@ -20,7 +20,7 @@ on:
       - 'k8s/**'
       - '.github/workflows/app-cicd.yml'
   pull_request:
-    branches: [ dev ]
+    branches: [ dev, qa, uat, prod ]
     paths:
       - 'Program.cs'
       - 'PayrollApp.csproj'
@@ -41,7 +41,7 @@ on:
     workflows: [ "Infrastructure" ]
     types:
       - completed
-    branches: [ dev ]
+    branches: [ dev, qa, uat, prod ]
   workflow_dispatch:
 
 permissions:
@@ -163,7 +163,7 @@ jobs:
         id: sonar_mode
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = 'push' ] && [ "${{ github.ref }}" = 'refs/heads/dev' ]; then
+          if [ "${{ github.ref }}" = 'refs/heads/prod' ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -206,7 +206,7 @@ jobs:
             echo "- SonarQube analysis executed: ${{ steps.sonar_mode.outputs.enabled }}"
             echo "- Tests project: PayrollApp.Tests/PayrollApp.Tests.csproj"
             if [ "${{ steps.sonar_mode.outputs.enabled }}" != 'true' ]; then
-              echo "- Note: SonarQube Community Edition is limited to dev branch analysis in this workflow."
+              echo "- Note: SonarQube Community Edition is intentionally executed only for the prod branch because Community Edition supports a single quality baseline. Gitleaks executes on every branch."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
