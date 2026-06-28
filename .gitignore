@@ -15,6 +15,7 @@ obj/
 .DS_Store
 Thumbs.db
 *.log
+*.log
 node_modules/
 wwwroot/lib/
 appsettings.Development.json
