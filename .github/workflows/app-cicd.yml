@@ -19,24 +19,6 @@ on:
       - '.dockerignore'
       - 'k8s/**'
       - '.github/workflows/app-cicd.yml'
-  pull_request:
-    branches: [ dev, qa, uat, prod ]
-    paths:
-      - 'Program.cs'
-      - 'PayrollApp.csproj'
-      - 'PayrollApp.Tests/**'
-      - 'appsettings.json'
-      - 'global.json'
-      - 'Data/**'
-      - 'Models/**'
-      - 'Pages/**'
-      - 'Properties/**'
-      - 'Services/**'
-      - 'wwwroot/**'
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'k8s/**'
-      - '.github/workflows/app-cicd.yml'
   workflow_run:
     workflows: [ "Infrastructure" ]
     types:
