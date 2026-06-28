@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using MySqlConnector;
 using PayrollApp.Models;
 
 namespace PayrollApp.Data;
@@ -8,9 +7,8 @@ public static class DbInitializer
 {
     public static void Initialize(ApplicationDbContext context)
     {
-        EnsureDatabaseExists(context);
-
-        // Ensure database is created
+        // The Azure SQL Database is provisioned by infrastructure (Terraform).
+        // EnsureCreated() creates the schema inside that existing database.
         context.Database.EnsureCreated();
 
         // Check if we already have data
@@ -96,25 +94,5 @@ public static class DbInitializer
 
         context.Employees.AddRange(employees);
         context.SaveChanges();
-    }
-
-    private static void EnsureDatabaseExists(ApplicationDbContext context)
-    {
-        var connectionString = context.Database.GetDbConnection().ConnectionString;
-        var builder = new MySqlConnectionStringBuilder(connectionString);
-        var databaseName = builder.Database;
-        if (string.IsNullOrEmpty(databaseName))
-        {
-            throw new InvalidOperationException("The MySQL connection string must specify a database name.");
-        }
-
-        builder.Database = string.Empty;
-
-        using var connection = new MySqlConnection(builder.ConnectionString);
-        connection.Open();
-
-        using var command = connection.CreateCommand();
-        command.CommandText = $"CREATE DATABASE IF NOT EXISTS `{databaseName}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
-        command.ExecuteNonQuery();
     }
 }
