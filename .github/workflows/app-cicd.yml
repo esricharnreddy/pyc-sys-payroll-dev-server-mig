@@ -3,7 +3,7 @@ name: App code build pipeline
 on:
   pull_request:
     branches: [ dev ]
-    types: [closed]   # ✅ only when PR is closed
+    types: [closed]   # ✅ trigger only when PR is closed (merged or not)
 
 permissions:
   id-token: write
@@ -19,17 +19,19 @@ jobs:
     name: Gitleaks Scan
     runs-on: ubuntu-latest
 
-    # ✅ ONLY run when PR is merged (not just closed)
+    # ✅ run ONLY if PR is merged
     if: github.event.pull_request.merged == true
 
     steps:
-      - name: Checkout
+      - name: Checkout merged code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}   # ✅ ensures dev branch code
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v3
         with:
-          fail: false   # ✅ don’t fail pipeline
+          fail: false   # ✅ do not fail pipeline
 
       - name: Generate SARIF
         if: always()
@@ -47,7 +49,9 @@ jobs:
           sarif_file: gitleaks.sarif
 
       - name: Gitleaks Result
-        run: echo "::warning::Gitleaks scan completed"
+        run: echo "::warning::Gitleaks scan completed (non-blocking)"
+
+
 
   build:
     name: Build Application
@@ -56,12 +60,13 @@ jobs:
     if: github.event.pull_request.merged == true
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout merged code
+        uses: actions/checkout@v6
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore
         run: dotnet restore
@@ -72,6 +77,8 @@ jobs:
       - name: Test
         run: dotnet test --configuration Release
 
+
+
   deploy_dev:
     name: Deploy to DEV
     runs-on: ubuntu-latest
@@ -79,5 +86,5 @@ jobs:
     if: github.event.pull_request.merged == true
 
     steps:
-      - name: Deploy
-        run: echo "Deploying to DEV after PR merge"
+      - name: Deploy to DEV
+        run: echo "✅ Deploying to DEV after PR merge"
