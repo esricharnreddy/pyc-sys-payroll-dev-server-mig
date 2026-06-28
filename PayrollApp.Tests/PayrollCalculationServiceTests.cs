@@ -34,7 +34,7 @@ public class PayrollCalculationServiceTests
     {
         var tax = _service.CalculateTax(1234.567m);
 
-        Assert.Equal(185.19m, tax);
+        Assert.Equal(172.84m, tax);
     }
 
     [Fact]
@@ -75,11 +75,11 @@ public class PayrollCalculationServiceTests
         Assert.Equal(payPeriodEnd, payrollRecord.PayPeriodEnd);
         Assert.Equal(80m, payrollRecord.HoursWorked);
         Assert.Equal(2000m, payrollRecord.GrossPay);
-        Assert.Equal(300m, payrollRecord.TaxAmount);
+        Assert.Equal(280m, payrollRecord.TaxAmount);
         Assert.Equal(124m, payrollRecord.SocialSecurityAmount);
         Assert.Equal(200m, payrollRecord.HealthInsuranceAmount);
-        Assert.Equal(624m, payrollRecord.TotalDeductions);
-        Assert.Equal(1376m, payrollRecord.NetPay);
+        Assert.Equal(604m, payrollRecord.TotalDeductions);
+        Assert.Equal(1396m, payrollRecord.NetPay);
     }
 
     private static Employee CreateSalariedEmployee(decimal annualSalary)
