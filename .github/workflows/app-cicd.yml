@@ -2,9 +2,9 @@ name: App code build pipeline
 
 on:
   push:
-    branches: [ dev, qa, uat, prod ]
+    branches: [ dev, qa, uat, prod, feature-1.1-fix ]
   pull_request:
-    branches: [ dev, qa, uat, prod ]
+    branches: [ dev, qa, uat, prod, feature-1.1-fix ]
   workflow_dispatch:
 
 permissions:
