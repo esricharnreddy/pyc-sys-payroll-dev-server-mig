@@ -4,8 +4,8 @@ namespace PayrollApp.Services;
 
 public class PayrollCalculationService
 {
-    // Tax rate: 15%
-    private const decimal TaxRate = 0.15m;
+    // Tax rate: 16%
+    private const decimal TaxRate = 0.16m;
     
     // Social Security rate: 6.2%
     private const decimal SocialSecurityRate = 0.062m;
