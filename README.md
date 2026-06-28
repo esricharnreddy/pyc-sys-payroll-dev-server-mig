@@ -424,6 +424,4 @@ dotnet tool install --global dotnet-ef --version 8.0.0
 - Entity Framework Core documentation: https://docs.microsoft.com/ef/core
 - Azure SQL Database documentation: https://learn.microsoft.com/azure/azure-sql/database/
 
-## License
 
-This project is provided as-is for educational and demonstration purposes.
