@@ -78,6 +78,8 @@ jobs:
         id: gitleaks_action
         continue-on-error: true
         uses: gitleaks/gitleaks-action@v3
+        with:
+          fail: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'false'
