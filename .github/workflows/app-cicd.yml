@@ -86,7 +86,7 @@ jobs:
 
       - name: Generate SARIF report
         id: gitleaks_sarif
-        continue-on-error: true
+        continue-on-error: false
         shell: bash
         run: |
           docker run --rm \
