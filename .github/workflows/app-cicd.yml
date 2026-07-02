@@ -1,4 +1,4 @@
-name: App code build pipeline
+name: payroll-app-deploy-pipeline
 
 on:
   push:
